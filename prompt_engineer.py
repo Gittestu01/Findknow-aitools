@@ -51,11 +51,13 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
         color: #333;
+        font-weight: 500;
     }
     
     .placeholder-text {
-        color: rgba(255,255,255,0.7);
+        color: rgba(255,255,255,0.9);
         font-style: italic;
+        font-weight: 500;
     }
     
     .model-selector {
@@ -63,6 +65,7 @@ st.markdown("""
         border-radius: 10px;
         padding: 1rem;
         margin: 1rem 0;
+        color: #333;
     }
     
     .loading-spinner {
@@ -82,16 +85,19 @@ st.markdown("""
         padding: 1rem;
         margin: 0.5rem 0;
         border-left: 4px solid #667eea;
+        color: #333;
     }
     
     .user-message {
         background: #e3f2fd;
         border-left-color: #2196f3;
+        color: #333;
     }
     
     .assistant-message {
         background: #f3e5f5;
         border-left-color: #9c27b0;
+        color: #333;
     }
     
     .model-info {
