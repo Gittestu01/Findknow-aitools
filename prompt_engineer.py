@@ -100,6 +100,7 @@ st.markdown("""
         padding: 0.5rem;
         margin: 0.5rem 0;
         border-left: 3px solid #4CAF50;
+        color: #333;
     }
     
     @keyframes spin {
