@@ -1,3 +1,0 @@
-# 系统依赖包
-python-docx
-PyPDF2
