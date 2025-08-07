@@ -332,7 +332,7 @@ def main_page():
         # 使用可点击的链接
         st.markdown(f"""
         <div style="text-align: center;">
-            <a href="/resume_assistant" target="_self" style="
+            <a href="https://findknow-aitools-cv.streamlit.app/" target="_blank" style="
                 display: inline-block;
                 background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
                 color: white;
@@ -356,7 +356,7 @@ def main_page():
         # 使用可点击的链接
         st.markdown(f"""
         <div style="text-align: center;">
-            <a href="/prompt_engineer" target="_self" style="
+            <a href="https://findknow-aitools-prompt.streamlit.app/" target="_blank" style="
                 display: inline-block;
                 background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
                 color: white;

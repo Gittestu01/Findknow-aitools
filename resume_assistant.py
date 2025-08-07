@@ -578,7 +578,7 @@ def main():
     with col1:
         st.markdown("""
         <div style="text-align: center;">
-            <a href="/" target="_self" style="
+            <a href="https://findknow-aitools.streamlit.app/" target="_blank" style="
                 display: inline-block;
                 background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
                 color: white;
