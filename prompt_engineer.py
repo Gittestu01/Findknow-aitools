@@ -370,26 +370,7 @@ def reset_conversation():
     st.session_state.conversation_history = []
     st.rerun()
 
-def display_conversation_history():
-    """显示对话历史"""
-    if st.session_state.conversation_history:
-        st.markdown("### 💬 对话历史")
-        
-        for i, message in enumerate(st.session_state.conversation_history):
-            if message["role"] == "user":
-                st.markdown(f"""
-                <div class="chat-message user-message">
-                    <strong>👤 用户:</strong><br>
-                    {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="chat-message assistant-message">
-                    <strong>🤖 助手:</strong><br>
-                    {message["content"]}
-                </div>
-                """, unsafe_allow_html=True)
+
 
 def display_model_info(selected_model):
     """显示模型信息"""
@@ -466,10 +447,8 @@ def main():
     with col3:
         st.write("")  # 占位符，保持布局平衡
     
-    # 显示对话历史
-    display_conversation_history()
-    
-    # 大模型选择区域
+    # ========== 固定区域：模型选择 ==========
+    st.markdown("---")
     st.markdown("### 🤖 选择目标大模型")
     st.markdown("请选择你想要将提示词应用的大模型，我将根据模型特点为您提供针对性的优化建议。")
     
@@ -487,33 +466,166 @@ def main():
     # 显示模型信息
     display_model_info(selected_model)
     
-    # 提示信息
-    st.markdown("""
-    <div class="card">
-        <p class="placeholder-text">请描述您的需求，我将根据选择的大模型为您优化提示词，让AI更好地理解您的意图...</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # ========== 对话历史区域 ==========
+    st.markdown("---")
     
-    # 用户输入区域
-    st.markdown("### ✍️ 需求描述")
+    # 对话历史标题和状态
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("### 💬 对话历史")
+    with col2:
+        if st.session_state.conversation_history:
+            st.markdown(f"""
+            <div style="
+                background: #4CAF50;
+                color: white;
+                padding: 0.5rem;
+                border-radius: 20px;
+                text-align: center;
+                font-size: 0.8rem;
+                font-weight: bold;
+            ">
+                {len(st.session_state.conversation_history)} 条消息
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # 如果没有对话历史，显示引导信息
+    if not st.session_state.conversation_history:
+        st.markdown("""
+        <div class="card">
+            <p class="placeholder-text">👋 欢迎使用提示词工程师！请在下方输入您的需求，我将为您优化提示词。</p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # 显示对话历史
+        for i, message in enumerate(st.session_state.conversation_history):
+            if message["role"] == "user":
+                st.markdown(f"""
+                <div class="chat-message user-message">
+                    <strong>👤 用户:</strong><br>
+                    {message["content"]}
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="chat-message assistant-message">
+                    <strong>🤖 助手:</strong><br>
+                    {message["content"]}
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # 添加快速导航提示
+        if len(st.session_state.conversation_history) > 2:
+            st.markdown("""
+            <div style="
+                background: #f0f8ff;
+                border: 1px solid #667eea;
+                border-radius: 8px;
+                padding: 0.5rem;
+                margin: 1rem 0;
+                text-align: center;
+                font-size: 0.9rem;
+                color: #667eea;
+            ">
+                💡 提示：对话历史较长，您可以向上滚动查看完整对话，或继续在下方输入新的需求
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # ========== 用户输入区域（固定在底部） ==========
+    st.markdown("---")
+    
+    # 输入区域标题和状态指示
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("### ✍️ 需求描述")
+    with col2:
+        if st.session_state.conversation_history:
+            st.markdown("""
+            <div style="
+                background: #FF9800;
+                color: white;
+                padding: 0.5rem;
+                border-radius: 20px;
+                text-align: center;
+                font-size: 0.8rem;
+                font-weight: bold;
+            ">
+                🔄 继续对话
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="
+                background: #2196F3;
+                color: white;
+                padding: 0.5rem;
+                border-radius: 20px;
+                text-align: center;
+                font-size: 0.8rem;
+                font-weight: bold;
+            ">
+                🆕 新对话
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # 根据是否有对话历史显示不同的提示
+    if not st.session_state.conversation_history:
+        placeholder_text = "例如：我需要一个能够分析财务报表的AI助手，能够识别关键指标并提供投资建议..."
+        help_text = "请描述您的需求，我将根据选择的大模型为您优化提示词"
+    else:
+        placeholder_text = "请输入您的反馈或继续描述需求..."
+        help_text = "您可以继续优化提示词或提出新的需求"
+    
     user_input = st.text_area(
         "请描述您的需求或反馈",
         height=150,
-        placeholder="例如：我需要一个能够分析财务报表的AI助手，能够识别关键指标并提供投资建议...",
+        placeholder=placeholder_text,
+        help=help_text,
         key="user_input_text"
     )
     
-    # 调试选项
-    debug_mode = st.checkbox("🔧 调试模式", help="显示详细的调试信息", key="debug_mode")
-    
-    # 按钮区域
-    col1, col2 = st.columns([1, 1])
+    # 调试选项和按钮区域
+    col1, col2, col3 = st.columns([1, 1, 1])
     
     with col1:
-        optimize_clicked = st.button("🔧 开始优化", use_container_width=True)
+        optimize_clicked = st.button("🔧 开始优化", use_container_width=True, help="开始新的提示词优化")
     
     with col2:
-        continue_clicked = st.button("💬 继续对话", use_container_width=True, disabled=not st.session_state.conversation_history)
+        continue_clicked = st.button("💬 继续对话", use_container_width=True, disabled=not st.session_state.conversation_history, help="基于当前对话继续优化")
+    
+    with col3:
+        debug_mode = st.checkbox("🔧 调试模式", help="显示详细的调试信息", key="debug_mode")
+    
+    # 添加视觉提示和操作指南
+    if st.session_state.conversation_history:
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem;
+            border-radius: 10px;
+            margin: 1rem 0;
+            text-align: center;
+            font-weight: bold;
+        ">
+            💡 提示：优化结果已显示在上方对话历史中，您可以继续输入反馈进行进一步优化
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="
+            background: #e3f2fd;
+            border: 1px solid #2196F3;
+            border-radius: 10px;
+            padding: 1rem;
+            margin: 1rem 0;
+            text-align: center;
+            color: #1976d2;
+            font-weight: bold;
+        ">
+            🚀 开始您的提示词优化之旅！输入需求后点击"开始优化"即可获得专业的提示词建议
+        </div>
+        """, unsafe_allow_html=True)
     
     # 处理开始优化
     if optimize_clicked:
@@ -540,7 +652,7 @@ def main():
                         "content": result
                     })
                     
-                    st.success("✅ 优化完成！")
+                    st.success("✅ 优化完成！结果已添加到对话历史中")
                     st.rerun()
                 else:
                     st.error("提示词优化失败，请重试")
