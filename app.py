@@ -310,12 +310,67 @@ def main_page():
     # 工具类型选择
     tool_type = st.selectbox(
         "选择工具类型",
-        ["商业端", "生活端"],
+        ["商业端", "办公工具端", "生活端"],
         key="tool_type"
     )
     
     if tool_type == "生活端":
         st.info("生活端功能敬请期待...")
+        return
+    
+    if tool_type == "办公工具端":
+        # 办公工具端功能
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            tool = TOOLS_CONFIG["video_to_gif"]
+            st.markdown(f"""
+            <div class="tool-card">
+                <div class="tool-card-content">
+                    <div class="tool-icon">{tool['icon']}</div>
+                    <h3 class="tool-title">{tool['name']}</h3>
+                    <p class="tool-description">{tool['description']}</p>
+                </div>
+                <div class="tool-card-button">
+                    <a href="pages/video_to_gif" class="tool-button">
+                        进入视频转GIF
+                    </a>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown("""
+            <div class="tool-card">
+                <div class="tool-card-content">
+                    <div class="tool-icon">📊</div>
+                    <h3 class="tool-title">更多办公工具</h3>
+                    <p class="tool-description">敬请期待更多办公效率工具...</p>
+                </div>
+                <div class="tool-card-button">
+                    <div class="tool-button-disabled">
+                        敬请期待
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown("""
+            <div class="tool-card">
+                <div class="tool-card-content">
+                    <div class="tool-icon">🚀</div>
+                    <h3 class="tool-title">更多工具</h3>
+                    <p class="tool-description">敬请期待更多AI工具...</p>
+                </div>
+                <div class="tool-card-button">
+                    <div class="tool-button-disabled">
+                        敬请期待
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
         return
     
     # 工具卡片

@@ -58,6 +58,12 @@ TOOLS_CONFIG = {
         "description": "专业提示词优化，提升AI对话效果",
         "icon": "🔧",
         "page": "pages/prompt_engineer.py"
+    },
+    "video_to_gif": {
+        "name": "视频转GIF工具",
+        "description": "智能将MP4视频转换为高质量GIF动画",
+        "icon": "🎬",
+        "page": "pages/video_to_gif.py"
     }
 }
 
