@@ -1,12 +1,26 @@
 import streamlit as st
 import os
 from pathlib import Path
-import cv2
 import numpy as np
 from PIL import Image
 import io
 import time
 import gc
+
+# 尝试导入OpenCV，如果失败则提供错误信息
+try:
+    import cv2
+    OPENCV_AVAILABLE = True
+except ImportError as e:
+    OPENCV_AVAILABLE = False
+    st.error(f"❌ OpenCV导入失败: {e}")
+    st.info("💡 请确保安装了opencv-python-headless包")
+    st.stop()
+except Exception as e:
+    OPENCV_AVAILABLE = False
+    st.error(f"❌ OpenCV初始化失败: {e}")
+    st.info("💡 这可能是由于缺少系统依赖库导致的，请尝试使用opencv-python-headless")
+    st.stop()
 
 # 页面配置
 st.set_page_config(
@@ -785,13 +799,9 @@ def main():
     st.info("💡 欢迎使用视频转GIF工具！上传视频后系统将自动分析并设置最优参数，支持多种视频格式转换")
     
     # 检查OpenCV是否可用
-    try:
-        import cv2
-        opencv_available = True
-    except ImportError:
-        opencv_available = False
-        st.error("❌ OpenCV未安装，请运行: pip install opencv-python")
-        st.info("💡 安装方法：pip install opencv-python")
+    if not OPENCV_AVAILABLE:
+        st.error("❌ OpenCV不可用，无法进行视频处理")
+        st.info("💡 请确保安装了opencv-python-headless包")
         return
     
     # 文件上传区域
