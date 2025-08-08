@@ -569,33 +569,37 @@ class StyleManager:
 
             .tool-button {
                 display: inline-block;
-                background: rgba(255, 255, 255, 0.2);
-                color: white;
+                background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+                color: #333333;
                 padding: 0.5rem 1.5rem;
                 text-decoration: none;
                 border-radius: 25px;
                 font-weight: bold;
-                border: 1px solid rgba(255, 255, 255, 0.3);
+                border: 2px solid rgba(255, 255, 255, 0.8);
                 transition: all 0.3s ease;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+                text-shadow: none;
             }
 
             .tool-button:hover {
-                background: rgba(255, 255, 255, 0.3);
+                background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
                 transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-                color: white;
+                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.25);
+                color: #333333;
                 text-decoration: none;
+                border-color: rgba(255, 255, 255, 0.9);
             }
 
             .tool-button-disabled {
                 display: inline-block;
-                background: rgba(255, 255, 255, 0.1);
-                color: rgba(255, 255, 255, 0.6);
+                background: linear-gradient(135deg, #6c757d 0%, #5a6268 100%);
+                color: rgba(255, 255, 255, 0.8);
                 padding: 0.5rem 1.5rem;
                 border-radius: 25px;
                 font-weight: bold;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                border: 2px solid rgba(255, 255, 255, 0.3);
                 cursor: not-allowed;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
             }
         </style>
         """
