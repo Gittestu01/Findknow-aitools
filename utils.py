@@ -512,6 +512,91 @@ class StyleManager:
                 margin: 0.5rem 0;
                 border: 1px dashed rgba(255, 255, 255, 0.2);
             }
+
+            /* 工具卡片统一样式 */
+            .tool-card {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                border-radius: 15px;
+                padding: 1.5rem;
+                margin: 1rem 0;
+                color: white;
+                transition: transform 0.3s ease;
+                display: flex;
+                flex-direction: column;
+                height: 280px; /* 固定高度确保一致性 */
+                justify-content: space-between;
+            }
+
+            .tool-card:hover {
+                transform: translateY(-5px);
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            }
+
+            .tool-card-content {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+            }
+
+            .tool-icon {
+                font-size: 2.5rem;
+                margin-bottom: 1rem;
+                text-align: center;
+            }
+
+            .tool-title {
+                font-size: 1.3rem;
+                font-weight: bold;
+                margin: 0.5rem 0;
+                text-align: center;
+            }
+
+            .tool-description {
+                font-size: 0.9rem;
+                line-height: 1.4;
+                margin: 0.5rem 0;
+                text-align: center;
+                flex: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .tool-card-button {
+                text-align: center;
+                margin-top: auto;
+            }
+
+            .tool-button {
+                display: inline-block;
+                background: rgba(255, 255, 255, 0.2);
+                color: white;
+                padding: 0.5rem 1.5rem;
+                text-decoration: none;
+                border-radius: 25px;
+                font-weight: bold;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                transition: all 0.3s ease;
+            }
+
+            .tool-button:hover {
+                background: rgba(255, 255, 255, 0.3);
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+                color: white;
+                text-decoration: none;
+            }
+
+            .tool-button-disabled {
+                display: inline-block;
+                background: rgba(255, 255, 255, 0.1);
+                color: rgba(255, 255, 255, 0.6);
+                padding: 0.5rem 1.5rem;
+                border-radius: 25px;
+                font-weight: bold;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                cursor: not-allowed;
+            }
         </style>
         """
     

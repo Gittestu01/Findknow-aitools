@@ -324,56 +324,50 @@ def main_page():
     with col1:
         tool = TOOLS_CONFIG["resume_assistant"]
         st.markdown(f"""
-        <div class="card">
-            <h3>{tool['icon']} {tool['name']}</h3>
-            <p>{tool['description']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        # 使用可点击的链接
-        st.markdown(f"""
-        <div style="text-align: center;">
-            <a href="https://findknow-aitools-cv.streamlit.app/" target="_blank" style="
-                display: inline-block;
-                background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                padding: 0.5rem 1.5rem;
-                text-decoration: none;
-                border-radius: 25px;
-                font-weight: bold;
-                margin-top: 1rem;
-            ">进入简历助手</a>
+        <div class="tool-card">
+            <div class="tool-card-content">
+                <div class="tool-icon">{tool['icon']}</div>
+                <h3 class="tool-title">{tool['name']}</h3>
+                <p class="tool-description">{tool['description']}</p>
+            </div>
+            <div class="tool-card-button">
+                <a href="https://findknow-aitools-cv.streamlit.app/" target="_blank" class="tool-button">
+                    进入简历助手
+                </a>
+            </div>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
         tool = TOOLS_CONFIG["prompt_engineer"]
         st.markdown(f"""
-        <div class="card">
-            <h3>{tool['icon']} {tool['name']}</h3>
-            <p>{tool['description']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        # 使用可点击的链接
-        st.markdown(f"""
-        <div style="text-align: center;">
-            <a href="https://findknow-aitools-prompt.streamlit.app/" target="_blank" style="
-                display: inline-block;
-                background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                padding: 0.5rem 1.5rem;
-                text-decoration: none;
-                border-radius: 25px;
-                font-weight: bold;
-                margin-top: 1rem;
-            ">进入提示词工程师</a>
+        <div class="tool-card">
+            <div class="tool-card-content">
+                <div class="tool-icon">{tool['icon']}</div>
+                <h3 class="tool-title">{tool['name']}</h3>
+                <p class="tool-description">{tool['description']}</p>
+            </div>
+            <div class="tool-card-button">
+                <a href="https://findknow-aitools-prompt.streamlit.app/" target="_blank" class="tool-button">
+                    进入提示词工程师
+                </a>
+            </div>
         </div>
         """, unsafe_allow_html=True)
     
     with col3:
         st.markdown("""
-        <div class="card">
-            <h3>🚀 更多工具</h3>
-            <p>敬请期待更多AI工具...</p>
+        <div class="tool-card">
+            <div class="tool-card-content">
+                <div class="tool-icon">🚀</div>
+                <h3 class="tool-title">更多工具</h3>
+                <p class="tool-description">敬请期待更多AI工具...</p>
+            </div>
+            <div class="tool-card-button">
+                <div class="tool-button-disabled">
+                    敬请期待
+                </div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
