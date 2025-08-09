@@ -423,7 +423,9 @@ def generate_ai_suggestions(video_props, user_input=""):
                                 # 添加预估大小信息
                                 suggestion['estimated_size'] = estimate_gif_size(video_props, adjusted_params)
                             
-                            validated_suggestions.append(suggestion)
+                            # 清理和标准化建议数据
+                            sanitized_suggestion = sanitize_suggestion(suggestion)
+                            validated_suggestions.append(sanitized_suggestion)
                     
                     if validated_suggestions:
                         # 缓存有效的建议
@@ -464,23 +466,42 @@ def validate_suggestion(suggestion, video_props):
         if not all(field in suggestion for field in required_fields):
             return False
         
+        # 验证名称和描述
+        if not suggestion['name'] or not suggestion['description']:
+            return False
+        
         params = suggestion['params']
+        if not isinstance(params, dict):
+            return False
+            
         required_params = ['fps', 'quality', 'width', 'height', 'optimize']
         if not all(param in params for param in required_params):
             return False
         
-        # 验证参数范围
-        if not (1 <= params['fps'] <= 30):
+        # 验证参数类型和范围
+        try:
+            fps = int(params['fps'])
+            quality = int(params['quality'])
+            width = int(params['width'])
+            height = int(params['height'])
+            optimize = bool(params['optimize'])
+        except (ValueError, TypeError):
             return False
-        if not (50 <= params['quality'] <= 100):
+        
+        if not (1 <= fps <= 30):
             return False
-        if not (10 <= params['width'] <= video_props['width'] * 2):
+        if not (50 <= quality <= 100):
             return False
-        if not (10 <= params['height'] <= video_props['height'] * 2):
+        if not (10 <= width <= video_props['width'] * 2):
+            return False
+        if not (10 <= height <= video_props['height'] * 2):
             return False
         
         # 验证尺寸约束
         constraint = suggestion['size_constraint']
+        if not isinstance(constraint, dict):
+            return False
+            
         required_constraint_fields = ['operator', 'value', 'unit', 'enabled']
         if not all(field in constraint for field in required_constraint_fields):
             return False
@@ -489,13 +510,91 @@ def validate_suggestion(suggestion, video_props):
             return False
         if constraint['unit'] not in ['B', 'KB', 'MB', 'GB']:
             return False
-        if not isinstance(constraint['value'], (int, float)) or constraint['value'] <= 0:
+        
+        try:
+            value = float(constraint['value'])
+            if value <= 0:
+                return False
+        except (ValueError, TypeError):
+            return False
+        
+        # 验证enabled字段
+        if not isinstance(constraint['enabled'], bool):
             return False
         
         return True
         
     except Exception:
         return False
+
+def sanitize_suggestion(suggestion):
+    """清理和标准化AI建议数据"""
+    try:
+        sanitized = {
+            'name': str(suggestion.get('name', '默认方案')),
+            'description': str(suggestion.get('description', '暂无描述')),
+            'params': {},
+            'size_constraint': {}
+        }
+        
+        # 清理参数
+        params = suggestion.get('params', {})
+        sanitized['params'] = {
+            'fps': int(params.get('fps', 10)),
+            'quality': int(params.get('quality', 85)),
+            'width': int(params.get('width', 640)),
+            'height': int(params.get('height', 480)),
+            'optimize': bool(params.get('optimize', True))
+        }
+        
+        # 清理约束
+        constraint = suggestion.get('size_constraint', {})
+        sanitized['size_constraint'] = {
+            'operator': str(constraint.get('operator', '<')),
+            'value': float(constraint.get('value', 5.0)),
+            'unit': str(constraint.get('unit', 'MB')),
+            'enabled': bool(constraint.get('enabled', True))
+        }
+        
+        # 添加target_size
+        unit_multipliers = {
+            'B': 1,
+            'KB': 1024,
+            'MB': 1024 * 1024,
+            'GB': 1024 * 1024 * 1024
+        }
+        multiplier = unit_multipliers.get(sanitized['size_constraint']['unit'].upper(), 1024 * 1024)
+        sanitized['size_constraint']['target_size'] = sanitized['size_constraint']['value'] * multiplier
+        
+        # 保留预估大小（如果存在）
+        if 'estimated_size' in suggestion:
+            try:
+                sanitized['estimated_size'] = float(suggestion['estimated_size'])
+            except (ValueError, TypeError):
+                pass
+        
+        return sanitized
+        
+    except Exception:
+        # 如果清理失败，返回一个安全的默认建议
+        return {
+            'name': '安全默认方案',
+            'description': '安全的默认转换参数',
+            'params': {
+                'fps': 10,
+                'quality': 85,
+                'width': 640,
+                'height': 480,
+                'optimize': True
+            },
+            'size_constraint': {
+                'operator': '<',
+                'value': 5.0,
+                'unit': 'MB',
+                'enabled': True,
+                'target_size': 5.0 * 1024 * 1024
+            }
+        }
 
 def get_fallback_suggestions(video_props, user_input=""):
     """获取备选建议（当AI失败时使用）- 基于实际预估的智能建议"""
@@ -586,13 +685,17 @@ def get_fallback_suggestions(video_props, user_input=""):
             elif template['name'] == '小文件分享版':
                 template['description'] += f"（预估约{new_target_mb:.1f}MB）"
         
-        suggestions.append({
+        suggestion = {
             'name': template['name'],
             'description': template['description'],
             'params': adjusted_params,
             'size_constraint': size_constraint,
             'estimated_size': estimate_gif_size(video_props, adjusted_params)
-        })
+        }
+        
+        # 清理和标准化建议数据
+        sanitized_suggestion = sanitize_suggestion(suggestion)
+        suggestions.append(sanitized_suggestion)
     
     return suggestions
 
@@ -1342,9 +1445,24 @@ def main():
         col_ai1, col_ai2 = st.columns([3, 1])
         with col_ai1:
             if st.button("🎯 获取AI建议", use_container_width=True):
-                with st.spinner("AI正在分析并生成建议..."):
-                    suggestions = generate_ai_suggestions(video_info, user_input)
-                    st.session_state.ai_suggestions = suggestions
+                try:
+                    with st.spinner("AI正在分析并生成建议..."):
+                        suggestions = generate_ai_suggestions(video_info, user_input)
+                        if suggestions:
+                            st.session_state.ai_suggestions = suggestions
+                        else:
+                            st.warning("⚠️ 未能生成AI建议，将使用默认建议")
+                            fallback_suggestions = get_fallback_suggestions(video_info, user_input)
+                            st.session_state.ai_suggestions = fallback_suggestions
+                except Exception as e:
+                    st.error(f"❌ 生成AI建议时出错: {str(e)}")
+                    st.info("💡 将使用默认建议作为替代方案")
+                    try:
+                        fallback_suggestions = get_fallback_suggestions(video_info, user_input)
+                        st.session_state.ai_suggestions = fallback_suggestions
+                    except Exception as fallback_error:
+                        st.error(f"❌ 生成默认建议也失败了: {str(fallback_error)}")
+                        st.info("💡 请手动调整参数")
         
         with col_ai2:
             if st.button("🔄 重新分析", use_container_width=True, help="清除缓存并重新获取AI建议"):
@@ -1358,51 +1476,123 @@ def main():
         
         # 显示AI建议
         if st.session_state.ai_suggestions:
-            st.success(f"✅ AI为您生成了 {len(st.session_state.ai_suggestions)} 个优化建议")
-            
-            # 显示建议
-            cols = st.columns(len(st.session_state.ai_suggestions))
-            for i, suggestion in enumerate(st.session_state.ai_suggestions):
-                with cols[i]:
-                    # 构建文件大小约束和预估信息
-                    size_info_parts = []
-                    
-                    # 添加预估大小信息
-                    if 'estimated_size' in suggestion:
-                        estimated_mb = suggestion['estimated_size'] / (1024 * 1024)
-                        if estimated_mb >= 1:
-                            size_info_parts.append(f"预估: {estimated_mb:.1f}MB")
-                        else:
-                            estimated_kb = suggestion['estimated_size'] / 1024
-                            size_info_parts.append(f"预估: {estimated_kb:.0f}KB")
-                    
-                    # 添加约束信息
-                    if 'size_constraint' in suggestion and suggestion['size_constraint']['enabled']:
-                        constraint = suggestion['size_constraint']
-                        size_info_parts.append(f"约束: {constraint['operator']} {constraint['value']}{constraint['unit']}")
-                    
-                    size_constraint_info = ""
-                    if size_info_parts:
-                        size_constraint_info = " | " + " | ".join(size_info_parts)
-                    
-                    st.markdown(f"""
-                    <div class="ai-suggestion">
-                        <h4>{suggestion['name']}</h4>
-                        <p>{suggestion['description']}</p>
-                        <small>FPS: {suggestion['params']['fps']} | 质量: {suggestion['params']['quality']}%{size_constraint_info}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button(f"使用此建议", key=f"use_suggestion_{i}", use_container_width=True):
-                        # 应用转换参数
-                        st.session_state.conversion_params = suggestion['params'].copy()
-                        
-                        # 应用文件大小约束
-                        if 'size_constraint' in suggestion:
-                            st.session_state.size_constraint = suggestion['size_constraint'].copy()
-                        
-                        st.success("✅ 参数和文件大小约束已应用！")
-                        st.rerun()
+            try:
+                st.success(f"✅ AI为您生成了 {len(st.session_state.ai_suggestions)} 个优化建议")
+                
+                # 显示建议
+                num_suggestions = len(st.session_state.ai_suggestions)
+                if num_suggestions > 0:
+                    cols = st.columns(min(num_suggestions, 4))  # 限制最大列数为4
+                    for i, suggestion in enumerate(st.session_state.ai_suggestions):
+                        if not suggestion:  # 跳过空建议
+                            continue
+                        col_index = i % len(cols)  # 循环使用列
+                        with cols[col_index]:
+                            # 构建文件大小约束和预估信息
+                            size_info_parts = []
+                            
+                            # 添加预估大小信息
+                            try:
+                                if 'estimated_size' in suggestion and suggestion['estimated_size']:
+                                    estimated_size = float(suggestion['estimated_size'])
+                                    estimated_mb = estimated_size / (1024 * 1024)
+                                    if estimated_mb >= 1:
+                                        size_info_parts.append(f"预估: {estimated_mb:.1f}MB")
+                                    else:
+                                        estimated_kb = estimated_size / 1024
+                                        size_info_parts.append(f"预估: {estimated_kb:.0f}KB")
+                            except (ValueError, TypeError, ZeroDivisionError):
+                                # 如果预估大小信息有问题，跳过显示
+                                pass
+                            
+                            # 添加约束信息
+                            try:
+                                if ('size_constraint' in suggestion and 
+                                    suggestion['size_constraint'] and 
+                                    suggestion['size_constraint'].get('enabled', False)):
+                                    constraint = suggestion['size_constraint']
+                                    operator = constraint.get('operator', '<')
+                                    value = constraint.get('value', 5.0)
+                                    unit = constraint.get('unit', 'MB')
+                                    size_info_parts.append(f"约束: {operator} {value}{unit}")
+                            except (KeyError, TypeError):
+                                # 如果约束信息有问题，跳过显示
+                                pass
+                            
+                            size_constraint_info = ""
+                            if size_info_parts:
+                                size_constraint_info = " | " + " | ".join(size_info_parts)
+                            
+                            # 安全地获取建议信息
+                            try:
+                                name = suggestion.get('name', '未知方案')
+                                description = suggestion.get('description', '暂无描述')
+                                params = suggestion.get('params', {})
+                                fps = params.get('fps', '未知')
+                                quality = params.get('quality', '未知')
+                                
+                                st.markdown(f"""
+                                <div class="ai-suggestion">
+                                    <h4>{name}</h4>
+                                    <p>{description}</p>
+                                    <small>FPS: {fps} | 质量: {quality}%{size_constraint_info}</small>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            except Exception as e:
+                                st.error(f"显示建议信息时出错: {str(e)}")
+                                st.json(suggestion)  # 调试用，显示原始建议数据
+                            
+                            if st.button(f"使用此建议", key=f"use_suggestion_{i}", use_container_width=True):
+                                try:
+                                    # 安全地应用转换参数
+                                    if 'params' in suggestion and suggestion['params']:
+                                        # 确保所有参数都是正确的类型和值
+                                        params = suggestion['params'].copy()
+                                        
+                                        # 验证和转换参数类型
+                                        validated_params = {
+                                            'fps': int(params.get('fps', 10)),
+                                            'quality': int(params.get('quality', 85)),
+                                            'width': int(params.get('width', 640)),
+                                            'height': int(params.get('height', 480)),
+                                            'optimize': bool(params.get('optimize', True))
+                                        }
+                                        
+                                        st.session_state.conversion_params.update(validated_params)
+                                    
+                                    # 安全地应用文件大小约束
+                                    if 'size_constraint' in suggestion and suggestion['size_constraint']:
+                                        constraint = suggestion['size_constraint'].copy()
+                                        
+                                        # 验证约束参数
+                                        validated_constraint = {
+                                            'operator': str(constraint.get('operator', '<')),
+                                            'value': float(constraint.get('value', 5.0)),
+                                            'unit': str(constraint.get('unit', 'MB')),
+                                            'enabled': bool(constraint.get('enabled', True))
+                                        }
+                                        
+                                        # 计算target_size
+                                        unit_multipliers = {
+                                            'B': 1,
+                                            'KB': 1024,
+                                            'MB': 1024 * 1024,
+                                            'GB': 1024 * 1024 * 1024
+                                        }
+                                        multiplier = unit_multipliers.get(validated_constraint['unit'].upper(), 1024 * 1024)
+                                        validated_constraint['target_size'] = validated_constraint['value'] * multiplier
+                                        
+                                        st.session_state.size_constraint.update(validated_constraint)
+                                    
+                                    st.success("✅ 参数和文件大小约束已应用！")
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ 应用建议时出错: {str(e)}")
+                                    st.info("💡 请尝试手动调整参数")
+            except Exception as e:
+                st.error(f"❌ 显示AI建议时出错: {str(e)}")
+                st.info("💡 请尝试重新获取建议或使用手动参数调整")
     
     # 参数设置区域
     if uploaded_file:
