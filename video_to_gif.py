@@ -1522,7 +1522,14 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
             if operator in ['<', '<=']:
                 if gif_size > target_size:
                     status_text.text(f"正在智能优化GIF文件大小到 {target_size_display} 以下...")
-                    optimized_data = optimize_gif_size(gif_data, target_size)
+                    
+                    # 增加超时保护和错误处理
+                    try:
+                        optimized_data = optimize_gif_size(gif_data, target_size)
+                    except Exception as opt_e:
+                        st.error(f"❌ 优化过程失败: {str(opt_e)}")
+                        status_text.text("优化失败，返回原始文件")
+                        optimized_data = None
                     if optimized_data:
                         optimized_size = len(optimized_data)
                         optimized_size_mb = optimized_size / (1024 * 1024)
@@ -1558,7 +1565,14 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
                 if abs(gif_size - target_size) / target_size > tolerance:
                     if gif_size > target_size:
                         status_text.text(f"正在优化GIF文件大小到 {target_size_display}...")
-                        optimized_data = optimize_gif_size(gif_data, target_size)
+                        
+                        # 增加错误处理
+                        try:
+                            optimized_data = optimize_gif_size(gif_data, target_size)
+                        except Exception as opt_e:
+                            st.error(f"❌ 优化过程失败: {str(opt_e)}")
+                            status_text.text("优化失败，返回原始文件")
+                            optimized_data = None
                         if optimized_data:
                             return optimized_data
                         else:
@@ -1589,7 +1603,7 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
         return None
 
 def optimize_gif_size(gif_data, target_size_bytes):
-    """优化GIF文件大小 - 高性能版本，保持最高可能质量"""
+    """优化GIF文件大小 - 增强版本，提升稳定性和内存管理"""
     try:
         original_size = len(gif_data)
         
@@ -1600,26 +1614,52 @@ def optimize_gif_size(gif_data, target_size_bytes):
         # 计算压缩比例
         compression_ratio = target_size_bytes / original_size
         
-        # 将GIF数据转换为PIL图像
-        gif_buffer = io.BytesIO(gif_data)
-        with Image.open(gif_buffer) as img:
-            frames = []
-            durations = []
-            
-            # 预分配数组大小以减少内存重分配
-            try:
+        # 将GIF数据转换为PIL图像 - 增强错误处理
+        gif_buffer = None
+        frames = []
+        durations = []
+        
+        try:
+            gif_buffer = io.BytesIO(gif_data)
+            with Image.open(gif_buffer) as img:
+                # 限制最大帧数以控制内存使用 - 根据压缩比例动态调整
+                max_frames = min(100, max(10, int(200 * compression_ratio)))
                 frame_count = 0
-                while True:
-                    frames.append(img.copy())
-                    durations.append(img.info.get('duration', 100))
-                    img.seek(len(frames))
-                    frame_count += 1
-                    
-                    # 限制最大帧数以控制内存使用
-                    if frame_count > 200:
-                        break
-            except EOFError:
-                pass
+                
+                try:
+                    while frame_count < max_frames:
+                        try:
+                            # 复制帧并获取持续时间
+                            frame_copy = img.copy()
+                            frames.append(frame_copy)
+                            durations.append(img.info.get('duration', 100))
+                            
+                            # 尝试移动到下一帧
+                            img.seek(len(frames))
+                            frame_count += 1
+                            
+                        except EOFError:
+                            # 到达文件末尾，正常结束
+                            break
+                        except Exception as frame_e:
+                            # 单帧处理失败，跳过该帧
+                            break
+                            
+                except Exception as seek_e:
+                    # 如果没有获取到任何帧，返回原始数据
+                    if not frames:
+                        return gif_data
+                        
+        except Exception as gif_e:
+            st.error(f"❌ GIF文件解析失败: {str(gif_e)}")
+            return gif_data
+        finally:
+            # 确保缓冲区被清理
+            if gif_buffer:
+                try:
+                    gif_buffer.close()
+                except:
+                    pass
         
         if not frames:
             return gif_data
@@ -1659,6 +1699,9 @@ def optimize_gif_size(gif_data, target_size_bytes):
         best_quality_score = 0
         
         for i, strategy in enumerate(strategies):
+            optimized_buffer = None
+            resized_frames = []
+            
             try:
                 # 计算新的尺寸
                 new_width = max(10, int(frames[0].width * strategy['scale']))
@@ -1669,50 +1712,89 @@ def optimize_gif_size(gif_data, target_size_bytes):
                 optimized_frames = frames[::frame_interval]
                 optimized_durations = [durations[j] for j in range(0, len(durations), frame_interval)]
                 
-                # 调整帧尺寸
-                resized_frames = []
+                # 确保至少有一帧
+                if not optimized_frames:
+                    optimized_frames = [frames[0]]
+                    optimized_durations = [durations[0] if durations else 100]
+                
+                # 调整帧尺寸 - 增强错误处理
                 for frame in optimized_frames:
-                    resized_frame = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                    resized_frames.append(resized_frame)
+                    try:
+                        resized_frame = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        resized_frames.append(resized_frame)
+                    except Exception as resize_e:
+                        # 如果某帧缩放失败，跳过该帧
+                        continue
                 
-                # 保存优化后的GIF
-                optimized_buffer = io.BytesIO()
-                resized_frames[0].save(
-                    optimized_buffer,
-                    save_all=True,
-                    append_images=resized_frames[1:],
-                    duration=optimized_durations[0] if optimized_durations else 100,
-                    loop=0,
-                    optimize=True,
-                    quality=strategy['quality']
-                )
+                # 确保有足够的帧
+                if not resized_frames:
+                    continue
                 
-                optimized_buffer.seek(0)
-                optimized_data = optimized_buffer.getvalue()
-                optimized_size = len(optimized_data)
-                
-                # 检查是否满足大小要求
-                if optimized_size <= target_size_bytes:
-                    # 计算质量评分 (尺寸比例 * 质量比例 * 帧数比例)
-                    quality_score = (strategy['scale'] ** 2) * (strategy['quality'] / 100) * strategy['fps_reduction']
+                # 保存优化后的GIF - 增强错误处理
+                try:
+                    optimized_buffer = io.BytesIO()
+                    resized_frames[0].save(
+                        optimized_buffer,
+                        save_all=True,
+                        append_images=resized_frames[1:] if len(resized_frames) > 1 else [],
+                        duration=optimized_durations[0] if optimized_durations else 100,
+                        loop=0,
+                        optimize=True,
+                        quality=int(strategy['quality'])
+                    )
                     
-                    # 如果质量更好，更新最佳结果
-                    if quality_score > best_quality_score:
-                        best_quality_score = quality_score
-                        best_result = optimized_data
+                    optimized_buffer.seek(0)
+                    optimized_data = optimized_buffer.getvalue()
+                    optimized_size = len(optimized_data)
+                    
+                    # 检查是否满足大小要求
+                    if optimized_size <= target_size_bytes:
+                        # 计算质量评分 (尺寸比例 * 质量比例 * 帧数比例)
+                        quality_score = (strategy['scale'] ** 2) * (strategy['quality'] / 100) * strategy['fps_reduction']
                         
-                    # 如果质量已经很高，直接返回
-                    if quality_score > 0.8:
-                        return optimized_data
+                        # 如果质量更好，更新最佳结果
+                        if quality_score > best_quality_score:
+                            best_quality_score = quality_score
+                            best_result = optimized_data
+                            
+                        # 如果质量已经很高，清理资源后返回
+                        if quality_score > 0.8:
+                            # 清理当前策略的资源
+                            for frame in resized_frames:
+                                try:
+                                    frame.close()
+                                except:
+                                    pass
+                            return optimized_data
+                            
+                except Exception as save_e:
+                    # GIF保存失败，继续下一个策略
+                    continue
                         
-            except Exception as e:
+            except Exception as strategy_e:
+                # 整个策略失败，继续下一个
                 continue
+            finally:
+                # 清理当前策略的资源
+                try:
+                    for frame in resized_frames:
+                        try:
+                            frame.close()
+                        except:
+                            pass
+                    if optimized_buffer:
+                        optimized_buffer.close()
+                except:
+                    pass
         
         # 如果找到了满足要求的结果，返回最佳质量的那个
         if best_result:
             return best_result
         
         # 如果所有策略都无法满足要求，使用最激进的策略
+        final_buffer = None
+        final_resized_frames = []
+        
         try:
             final_scale = max(0.1, compression_ratio ** 0.5)  # 使用平方根来平衡
             final_quality = max(30, int(compression_ratio * 100))
@@ -1725,42 +1807,84 @@ def optimize_gif_size(gif_data, target_size_bytes):
             optimized_frames = frames[::frame_interval]
             optimized_durations = [durations[j] for j in range(0, len(durations), frame_interval)]
             
-            resized_frames = []
+            # 确保至少有一帧
+            if not optimized_frames:
+                optimized_frames = [frames[0]]
+                optimized_durations = [durations[0] if durations else 100]
+            
+            # 调整帧尺寸
             for frame in optimized_frames:
-                resized_frame = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                resized_frames.append(resized_frame)
+                try:
+                    resized_frame = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    final_resized_frames.append(resized_frame)
+                except Exception as resize_e:
+                    continue
             
-            final_buffer = io.BytesIO()
-            resized_frames[0].save(
-                final_buffer,
-                save_all=True,
-                append_images=resized_frames[1:],
-                duration=optimized_durations[0] if optimized_durations else 100,
-                loop=0,
-                optimize=True,
-                quality=final_quality
-            )
-            
-            final_buffer.seek(0)
-            final_data = final_buffer.getvalue()
-            
-            if len(final_data) <= target_size_bytes:
-                return final_data
+            # 确保有帧可用
+            if final_resized_frames:
+                final_buffer = io.BytesIO()
+                final_resized_frames[0].save(
+                    final_buffer,
+                    save_all=True,
+                    append_images=final_resized_frames[1:] if len(final_resized_frames) > 1 else [],
+                    duration=optimized_durations[0] if optimized_durations else 100,
+                    loop=0,
+                    optimize=True,
+                    quality=final_quality
+                )
                 
+                final_buffer.seek(0)
+                final_data = final_buffer.getvalue()
+                
+                if len(final_data) <= target_size_bytes:
+                    return final_data
+                    
         except Exception as e:
+            # 记录错误但不影响返回值
             pass
+        finally:
+            # 清理最终策略的资源
+            try:
+                for frame in final_resized_frames:
+                    try:
+                        frame.close()
+                    except:
+                        pass
+                if final_buffer:
+                    final_buffer.close()
+            except:
+                pass
         
         # 如果仍然无法满足要求，返回最佳结果或原始数据
+        result = None
         if best_result:
             st.warning("⚠️ 无法完全达到目标大小，使用最佳优化结果")
-            return best_result
+            result = best_result
         else:
             st.warning("⚠️ 无法达到目标大小，返回原始文件")
-            return gif_data
+            result = gif_data
+        
+        return result
         
     except Exception as e:
         st.error(f"❌ 优化失败: {str(e)}")
         return gif_data
+    finally:
+        # 清理所有原始帧
+        try:
+            for frame in frames:
+                try:
+                    frame.close()
+                except:
+                    pass
+        except:
+            pass
+        
+        # 强制垃圾回收
+        try:
+            gc.collect()
+        except:
+            pass
 
 def cleanup_temp_files():
     """清理临时文件"""
