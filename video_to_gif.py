@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import os
+import sys
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -8,34 +9,53 @@ import io
 import time
 import gc
 import json
-from openai import OpenAI
+import traceback
+import warnings
 
-# 尝试导入OpenCV，如果失败则提供错误信息
+# 抑制警告信息
+warnings.filterwarnings('ignore')
+
+# 尝试导入OpenCV，增强错误处理
+OPENCV_AVAILABLE = False
+cv2 = None
+
 try:
     import cv2
     OPENCV_AVAILABLE = True
 except ImportError as e:
-    OPENCV_AVAILABLE = False
-    st.error(f"❌ OpenCV导入失败: {e}")
-    st.info("💡 请确保安装了opencv-python-headless包")
-    st.stop()
-except Exception as e:
-    OPENCV_AVAILABLE = False
-    st.error(f"❌ OpenCV初始化失败: {e}")
-    st.info("💡 这可能是由于缺少系统依赖库导致的，请尝试使用opencv-python-headless")
-    st.stop()
-
-# 页面配置（如果还没有设置的话）
-try:
-    st.set_page_config(
-        page_title="视频转GIF工具 - Findknow AI",
-        page_icon="🎬",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
-except st.errors.StreamlitAPIException:
-    # 页面配置已经设置过了，跳过
+    # 静默处理导入失败，在main函数中处理
     pass
+except Exception as e:
+    # 静默处理其他异常
+    pass
+
+# 尝试导入OpenAI
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+# 页面配置 - 更安全的设置方式
+def setup_page_config():
+    """安全地设置页面配置"""
+    try:
+        # 检查页面配置是否已经设置
+        if hasattr(st, '_config') and st._config.get_option('server.headless'):
+            return
+        
+        st.set_page_config(
+            page_title="视频转GIF工具 - Findknow AI",
+            page_icon="🎬",
+            layout="wide",
+            initial_sidebar_state="collapsed"
+        )
+    except Exception:
+        # 如果页面配置失败，继续运行
+        pass
+
+# 设置页面配置
+setup_page_config()
 
 # AI配置
 AI_CONFIG = {
@@ -136,55 +156,51 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def get_ai_client():
-    """获取AI客户端 - 支持代理环境"""
+    """获取AI客户端 - 增强的错误处理"""
+    if not OPENAI_AVAILABLE:
+        return None
+        
     api_key = st.session_state.get("api_key")
     if not api_key:
         return None
     
     try:
-        # 首先尝试使用代理友好的配置
-        import httpx
-        import ssl
-        
-        # 创建SSL上下文，更宽松的SSL验证
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        # 创建httpx客户端，支持代理环境
-        http_client = httpx.Client(
-            timeout=httpx.Timeout(
-                connect=15.0,
-                read=60.0,
-                write=15.0,
-                pool=15.0
-            ),
-            verify=False,  # 在代理环境下禁用SSL验证
-            limits=httpx.Limits(
-                max_keepalive_connections=3,
-                max_connections=10
-            ),
-            follow_redirects=True
-        )
-        
-        client = OpenAI(
-            api_key=api_key,
-            base_url=AI_CONFIG["base_url"],
-            http_client=http_client
-        )
-        return client
-        
-    except ImportError:
-        # 如果没有httpx，使用基本配置
+        # 首先尝试使用httpx进行优化配置
         try:
+            import httpx
+            import ssl
+            
+            # 创建httpx客户端，支持代理环境
+            http_client = httpx.Client(
+                timeout=httpx.Timeout(
+                    connect=10.0,
+                    read=30.0,
+                    write=10.0,
+                    pool=10.0
+                ),
+                verify=False,  # 在代理环境下禁用SSL验证
+                limits=httpx.Limits(
+                    max_keepalive_connections=2,
+                    max_connections=5
+                ),
+                follow_redirects=True
+            )
+            
+            client = OpenAI(
+                api_key=api_key,
+                base_url=AI_CONFIG["base_url"],
+                http_client=http_client
+            )
+            return client
+            
+        except ImportError:
+            # 如果没有httpx，使用基本配置
             client = OpenAI(
                 api_key=api_key,
                 base_url=AI_CONFIG["base_url"],
             )
             return client
-        except Exception as e:
-            # 静默处理，不显示错误
-            return None
+            
     except Exception as e:
         # 静默处理，不显示错误
         return None
@@ -305,6 +321,10 @@ def reset_agent():
 def validate_video_file(video_path):
     """验证视频文件的完整性和可读性"""
     try:
+        # 检查OpenCV是否可用
+        if not OPENCV_AVAILABLE or cv2 is None:
+            return False, "OpenCV不可用"
+            
         # 检查文件是否存在
         if not os.path.exists(video_path):
             return False, "文件不存在"
@@ -318,19 +338,28 @@ def validate_video_file(video_path):
             return False, "文件太小，可能已损坏"
         
         # 尝试打开视频文件进行基本验证
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            cap.release()
-            return False, "无法打开视频文件"
-        
-        # 尝试读取第一帧以验证文件完整性
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret or frame is None:
-            return False, "无法读取视频帧，文件可能已损坏"
-        
-        return True, "文件验证通过"
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                if cap:
+                    cap.release()
+                return False, "无法打开视频文件"
+            
+            # 尝试读取第一帧以验证文件完整性
+            ret, frame = cap.read()
+            if cap:
+                cap.release()
+            
+            if not ret or frame is None:
+                return False, "无法读取视频帧，文件可能已损坏"
+            
+            return True, "文件验证通过"
+            
+        except Exception as e:
+            if cap:
+                cap.release()
+            return False, f"视频处理失败: {str(e)}"
         
     except Exception as e:
         return False, f"文件验证失败: {str(e)}"
@@ -338,6 +367,11 @@ def validate_video_file(video_path):
 def analyze_video_properties(video_path):
     """分析视频属性 - 增强版本，具有更强的错误处理"""
     try:
+        # 检查OpenCV是否可用
+        if not OPENCV_AVAILABLE or cv2 is None:
+            st.error("❌ OpenCV不可用，无法分析视频文件")
+            return None
+            
         # 首先验证视频文件
         is_valid, message = validate_video_file(video_path)
         if not is_valid:
@@ -345,9 +379,14 @@ def analyze_video_properties(video_path):
             return None
         
         # 使用更安全的方式打开视频
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            st.error("❌ 无法打开视频文件，可能是格式不支持或文件已损坏")
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                st.error("❌ 无法打开视频文件，可能是格式不支持或文件已损坏")
+                return None
+        except Exception as e:
+            st.error(f"❌ 打开视频文件失败: {str(e)}")
             return None
         
         try:
@@ -891,6 +930,10 @@ def get_real_gif_size_preview(video_path, params):
     """通过真实转换获得准确的GIF文件大小预估 - 高性能优化版本，增强错误处理"""
     cap = None
     try:
+        # 检查OpenCV可用性
+        if not OPENCV_AVAILABLE or cv2 is None:
+            return None
+            
         # 首先验证视频文件
         is_valid, message = validate_video_file(video_path)
         if not is_valid:
@@ -1270,6 +1313,11 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
     """将视频转换为GIF - 高性能优化版本，增强错误处理"""
     cap = None
     try:
+        # 检查OpenCV可用性
+        if not OPENCV_AVAILABLE or cv2 is None:
+            st.error("❌ OpenCV不可用，无法进行视频转换")
+            return None
+            
         # 首先验证视频文件
         is_valid, message = validate_video_file(video_path)
         if not is_valid:
@@ -1824,11 +1872,16 @@ def setup_api_key():
 def main():
     """主函数 - 增强的错误处理和容错机制"""
     try:
+        # 检查系统环境
+        if not check_system_requirements():
+            return
+            
         # 初始化会话状态
         init_session_state()
     except Exception as e:
-        st.error(f"❌ 初始化会话状态失败: {str(e)}")
-        st.stop()
+        st.error(f"❌ 应用初始化失败: {str(e)}")
+        st.info("💡 请刷新页面重试，或联系技术支持")
+        return
     
     # 页面头部
     st.markdown("""
@@ -1839,7 +1892,10 @@ def main():
     """, unsafe_allow_html=True)
     
     # API密钥设置区域
-    setup_api_key()
+    try:
+        setup_api_key()
+    except Exception as e:
+        st.warning("⚠️ API密钥设置功能暂时不可用，您仍可使用基础功能")
     
     # 添加一些空间
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1848,12 +1904,56 @@ def main():
     if not check_api_key():
         st.info("💡 上传视频后可手动调整参数，设置API密钥后可使用AI智能建议功能")
     
+    # 运行主要应用逻辑
+    run_main_app()
+
+def check_system_requirements():
+    """检查系统要求"""
     # 检查OpenCV是否可用
-    if not OPENCV_AVAILABLE:
+    if not OPENCV_AVAILABLE or cv2 is None:
         st.error("❌ OpenCV不可用，无法进行视频处理")
         st.info("💡 请确保安装了opencv-python-headless包")
-        return
+        
+        # 提供安装建议
+        st.code("pip install opencv-python-headless")
+        
+        # 显示替代方案
+        st.markdown("### 🔧 问题排查")
+        st.markdown("""
+        1. **安装正确的OpenCV包**：
+           ```bash
+           pip install opencv-python-headless
+           ```
+        
+        2. **检查Python版本兼容性**：
+           - 确保使用Python 3.8-3.11（推荐）
+           - Python 3.13可能存在包兼容性问题
+        
+        3. **清理并重新安装**：
+           ```bash
+           pip uninstall opencv-python opencv-python-headless
+           pip install opencv-python-headless
+           ```
+        """)
+        return False
     
+    # 检查其他必要组件
+    try:
+        # 测试PIL
+        Image.new('RGB', (1, 1))
+        
+        # 测试numpy
+        np.array([1])
+        
+    except Exception as e:
+        st.error(f"❌ 系统环境检查失败: {str(e)}")
+        st.info("💡 请检查必要的Python包是否正确安装")
+        return False
+    
+    return True
+
+def run_main_app():
+    """运行主要的应用逻辑"""
     # 文件上传区域
     st.markdown("### 📁 文件上传")
     
