@@ -892,7 +892,7 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
         
         # 预分配帧数组以减少内存重分配
         frames = []
-        frames.reserve = max_frames  # 提示Python预分配空间
+        # Python列表无需预分配，自动扩容
         
         frame_count = 0
         processed_frames = 0
