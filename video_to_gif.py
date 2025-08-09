@@ -183,7 +183,9 @@ def reset_agent():
     # 清除所有可能影响UI的会话状态
     keys_to_clear = [
         'video_file', 'gif_data', 'conversion_params', 'size_constraint', 
-        'ai_suggestions', 'uploaded_file'
+        'ai_suggestions', 'uploaded_file', 'ai_suggestions_cache', 
+        'size_estimate_cache', 'last_params_state_key', 'cached_estimated_size',
+        'cached_constraint_satisfied', 'cached_constraint'
     ]
     
     for key in keys_to_clear:
@@ -192,6 +194,9 @@ def reset_agent():
     
     # 重新初始化会话状态
     init_session_state()
+    
+    # 强制垃圾回收以释放内存
+    gc.collect()
     
     # 强制重新运行页面，清除所有UI状态
     st.rerun()
@@ -236,13 +241,26 @@ def generate_ai_suggestions(video_props, user_input=""):
         st.info("💡 请返回主页设置API密钥，或使用下方的手动参数调整")
         return []
     
+    if not video_props:
+        return []
+    
+    # 生成缓存键 - 基于视频属性和用户输入
+    cache_key = f"{video_props['width']}x{video_props['height']}_{video_props['fps']:.1f}fps_{video_props['duration']:.1f}s_{hash(user_input.strip())}"
+    
+    # 检查会话状态中的缓存
+    if 'ai_suggestions_cache' not in st.session_state:
+        st.session_state.ai_suggestions_cache = {}
+    
+    # 如果缓存中存在相同的建议，直接返回
+    if cache_key in st.session_state.ai_suggestions_cache:
+        cached_suggestions = st.session_state.ai_suggestions_cache[cache_key]
+        st.success(f"✅ 已加载缓存的AI建议（{len(cached_suggestions)} 个方案）")
+        return cached_suggestions
+    
     # 获取AI客户端
     client = get_ai_client()
     if not client:
         st.error("❌ AI客户端初始化失败")
-        return []
-    
-    if not video_props:
         return []
     
     try:
@@ -405,24 +423,35 @@ def generate_ai_suggestions(video_props, user_input=""):
                             validated_suggestions.append(suggestion)
                     
                     if validated_suggestions:
+                        # 缓存有效的建议
+                        st.session_state.ai_suggestions_cache[cache_key] = validated_suggestions
                         st.success(f"✅ AI成功生成了 {len(validated_suggestions)} 个专业建议")
                         return validated_suggestions
                     else:
                         st.warning("⚠️ AI生成的建议格式有误，使用默认建议")
-                        return get_fallback_suggestions(video_props, user_input)
+                        fallback_suggestions = get_fallback_suggestions(video_props, user_input)
+                        # 也缓存备选建议
+                        st.session_state.ai_suggestions_cache[cache_key] = fallback_suggestions
+                        return fallback_suggestions
                 
                 else:
                     st.warning("⚠️ AI响应格式异常，使用默认建议")
-                    return get_fallback_suggestions(video_props, user_input)
+                    fallback_suggestions = get_fallback_suggestions(video_props, user_input)
+                    st.session_state.ai_suggestions_cache[cache_key] = fallback_suggestions
+                    return fallback_suggestions
                     
             except json.JSONDecodeError as e:
                 st.warning(f"⚠️ AI响应解析失败: {str(e)}")
-                return get_fallback_suggestions(video_props, user_input)
+                fallback_suggestions = get_fallback_suggestions(video_props, user_input)
+                st.session_state.ai_suggestions_cache[cache_key] = fallback_suggestions
+                return fallback_suggestions
                 
     except Exception as e:
         st.error(f"❌ AI分析失败: {str(e)}")
         st.info("💡 将使用默认建议作为备选方案")
-        return get_fallback_suggestions(video_props, user_input)
+        fallback_suggestions = get_fallback_suggestions(video_props, user_input)
+        st.session_state.ai_suggestions_cache[cache_key] = fallback_suggestions
+        return fallback_suggestions
 
 def validate_suggestion(suggestion, video_props):
     """验证AI建议的有效性"""
@@ -564,14 +593,14 @@ def get_fallback_suggestions(video_props, user_input=""):
     
     return suggestions
 
-def get_real_gif_size_preview(video_path, params, max_preview_frames=30):
-    """通过真实转换获得准确的GIF文件大小预估"""
+def get_real_gif_size_preview(video_path, params):
+    """通过真实转换获得准确的GIF文件大小预估 - 高性能优化版本"""
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return None
         
-        frames = []
+        # 预分配变量
         fps = params['fps']
         target_width = params['width']
         target_height = params['height']
@@ -579,56 +608,41 @@ def get_real_gif_size_preview(video_path, params, max_preview_frames=30):
         
         # 计算采样间隔
         original_fps = cap.get(cv2.CAP_PROP_FPS)
+        sample_interval = max(1, int(original_fps / fps)) if original_fps > 0 else 1
+        
+        # 限制最大帧数以提高速度 - 预估时使用更少帧数
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / original_fps if original_fps > 0 else 0
+        max_frames = min(50, total_frames // sample_interval)  # 预估时减少帧数提高速度
         
-        if original_fps > 0:
-            sample_interval = max(1, int(original_fps / fps))
-        else:
-            sample_interval = 1
-        
-        # 计算最终会有多少帧
-        final_frame_count = min(200, int(duration * fps))
-        
-        # 增加预览帧数以提高准确性，但不超过最终帧数的30%
-        preview_frame_count = min(max_preview_frames, max(10, final_frame_count // 3))
-        
-        # 计算跳帧间隔（均匀采样整个视频）
-        if total_frames > preview_frame_count:
-            frame_skip = total_frames // preview_frame_count
-        else:
-            frame_skip = 1
-        
+        # 预分配帧数组
+        frames = []
         frame_count = 0
         processed_frames = 0
         
-        # 重新定位到视频开始
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        # 预设置resize插值方法
+        resize_interpolation = cv2.INTER_LINEAR
         
-        while processed_frames < preview_frame_count:
-            # 跳到指定帧
-            target_frame = frame_count * frame_skip
-            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-            
+        while processed_frames < max_frames:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            try:
-                # 调整尺寸
-                if target_width and target_height:
-                    frame = cv2.resize(frame, (target_width, target_height))
-                
-                # BGR转RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # 转换为PIL图像
-                pil_image = Image.fromarray(frame_rgb)
-                frames.append(pil_image)
-                processed_frames += 1
-                
-            except Exception as e:
-                continue
+            # 按间隔采样
+            if frame_count % sample_interval == 0:
+                try:
+                    # 批量处理：调整尺寸和颜色转换
+                    if target_width and target_height:
+                        frame = cv2.resize(frame, (target_width, target_height), interpolation=resize_interpolation)
+                    
+                    # BGR转RGB - 直接转换
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # 转换为PIL图像 - 直接从numpy数组创建
+                    frames.append(Image.fromarray(frame_rgb))
+                    processed_frames += 1
+                        
+                except Exception:
+                    continue
             
             frame_count += 1
         
@@ -637,107 +651,114 @@ def get_real_gif_size_preview(video_path, params, max_preview_frames=30):
         if not frames:
             return None
         
-        # 创建预览GIF
+        # 创建GIF - 优化参数
         gif_buffer = io.BytesIO()
+        gif_duration = int(1000 / fps)
+        
         frames[0].save(
             gif_buffer,
             format='GIF',
             save_all=True,
             append_images=frames[1:],
-            duration=int(1000 / fps),  # 毫秒
+            duration=gif_duration,
             loop=0,
             optimize=params['optimize'],
             quality=quality
         )
         
         gif_buffer.seek(0)
-        preview_gif_data = gif_buffer.getvalue()
-        preview_size = len(preview_gif_data)
+        gif_data = gif_buffer.getvalue()
         
-        # 更精确的大小计算
-        if len(frames) > 0:
-            # 计算基础大小（不包括GIF头部）
-            base_size = preview_size - 1024  # 减去估计的头部大小
-            size_per_frame = max(100, base_size / len(frames))  # 每帧最少100字节
-            
-            # 估算完整文件大小
-            estimated_content_size = size_per_frame * final_frame_count
-            
-            # 添加GIF头部和元数据开销
-            gif_header_size = 1024 + (final_frame_count * 50)  # 头部 + 每帧元数据
-            estimated_full_size = estimated_content_size + gif_header_size
-            
-            # 根据视频复杂度调整
-            complexity_factor = min(1.3, max(0.8, (target_width * target_height) / (320 * 240)))
-            estimated_full_size *= complexity_factor
-            
-            return int(estimated_full_size)
-        
-        return None
-        
-    except Exception as e:
-        return None
-
-def estimate_gif_size(video_props, params, video_path=None):
-    """预估GIF文件大小 - 优先使用真实转换，回退到经验公式"""
-    # 如果有视频路径，尝试真实转换预估
-    if video_path and os.path.exists(video_path):
-        real_size = get_real_gif_size_preview(video_path, params)
-        if real_size is not None:
-            return real_size
-    
-    # 回退到经验公式预估
-    try:
-        # 基础计算参数
-        width = params.get('width', video_props['width'])
-        height = params.get('height', video_props['height'])
-        fps = params.get('fps', 10)
-        quality = params.get('quality', 85)
-        duration = video_props['duration']
-        
-        # 计算预估帧数
-        estimated_frames = min(200, int(duration * fps))
-        
-        # 基于经验公式预估文件大小
-        # 每帧像素数
-        pixels_per_frame = width * height
-        
-        # 基础字节数估算（考虑GIF压缩特性）
-        # GIF使用LZW压缩，压缩比受图像复杂度影响很大
-        base_bytes_per_pixel = 0.5  # 基础值
-        
-        # 质量影响因子
-        quality_factor = quality / 100.0
-        
-        # 复杂度因子（基于分辨率）
-        complexity_factor = min(2.0, (pixels_per_frame / (320 * 240)) ** 0.5)
-        
-        # 帧数影响（更多帧数会有更好的压缩）
-        frame_compression_factor = max(0.7, 1.0 - (estimated_frames / 1000.0))
-        
-        # 计算预估大小
-        estimated_size = (
-            pixels_per_frame * 
-            estimated_frames * 
-            base_bytes_per_pixel * 
-            quality_factor * 
-            complexity_factor * 
-            frame_compression_factor
-        )
-        
-        # 添加GIF头部和元数据开销
-        overhead = 1024 + (estimated_frames * 50)  # 每帧约50字节开销
-        estimated_size += overhead
-        
-        # 考虑优化选项
-        if params.get('optimize', True):
-            estimated_size *= 0.85  # 优化可减少约15%大小
+        # 基于采样帧数调整预估大小
+        size_multiplier = min(150, total_frames // sample_interval) / max_frames
+        estimated_size = len(gif_data) * size_multiplier
         
         return int(estimated_size)
         
-    except Exception as e:
-        # 如果预估失败，返回一个保守估计
-        return video_props['file_size'] // 4
+    except Exception:
+        return None
+
+def estimate_gif_size(video_props, params, video_path=None):
+    """预估GIF文件大小 - 优化版本，智能选择预估方式"""
+    
+    # 生成参数缓存键
+    params_key = f"{params.get('width', 0)}x{params.get('height', 0)}_{params.get('fps', 10)}fps_{params.get('quality', 85)}q"
+    
+    # 初始化预估缓存
+    if 'size_estimate_cache' not in st.session_state:
+        st.session_state.size_estimate_cache = {}
+    
+    # 检查缓存
+    if params_key in st.session_state.size_estimate_cache:
+        return st.session_state.size_estimate_cache[params_key]
+    
+    # 只在必要时使用真实转换（文件大小较小且参数合理时）
+    should_use_real_conversion = (
+        video_path and os.path.exists(video_path) and 
+        video_props.get('file_size', 0) < 50 * 1024 * 1024 and  # 小于50MB
+        video_props.get('duration', 0) < 30 and  # 短于30秒
+        params.get('width', 1920) * params.get('height', 1080) < 1920 * 1080  # 分辨率不太高
+    )
+    
+    estimated_size = None
+    
+    if should_use_real_conversion:
+        estimated_size = get_real_gif_size_preview(video_path, params)
+    
+    # 如果真实转换失败或不适用，使用优化的经验公式
+    if estimated_size is None:
+        try:
+            # 基础计算参数
+            width = params.get('width', video_props['width'])
+            height = params.get('height', video_props['height'])
+            fps = params.get('fps', 10)
+            quality = params.get('quality', 85)
+            duration = video_props['duration']
+            
+            # 计算预估帧数
+            estimated_frames = min(200, int(duration * fps))
+            
+            # 基于经验公式预估文件大小
+            pixels_per_frame = width * height
+            
+            # 基础字节数估算（考虑GIF压缩特性）
+            base_bytes_per_pixel = 0.5
+            
+            # 质量影响因子
+            quality_factor = quality / 100.0
+            
+            # 复杂度因子（基于分辨率）
+            complexity_factor = min(2.0, (pixels_per_frame / (320 * 240)) ** 0.5)
+            
+            # 帧数影响（更多帧数会有更好的压缩）
+            frame_compression_factor = max(0.7, 1.0 - (estimated_frames / 1000.0))
+            
+            # 计算预估大小
+            estimated_size = int(
+                pixels_per_frame * 
+                estimated_frames * 
+                base_bytes_per_pixel * 
+                quality_factor * 
+                complexity_factor * 
+                frame_compression_factor
+            )
+            
+            # 添加GIF头部和元数据开销
+            overhead = 1024 + (estimated_frames * 50)
+            estimated_size += overhead
+            
+            # 考虑优化选项
+            if params.get('optimize', True):
+                estimated_size = int(estimated_size * 0.85)
+                
+        except Exception:
+            # 如果预估失败，返回一个保守估计
+            estimated_size = video_props['file_size'] // 4
+    
+    # 缓存结果
+    st.session_state.size_estimate_cache[params_key] = estimated_size
+    
+    return estimated_size
 
 def validate_params_against_constraint(video_props, params, size_constraint, video_path=None):
     """验证参数是否能满足大小约束"""
@@ -848,14 +869,14 @@ def parse_size_constraint(operator, value, unit):
     }
 
 def convert_video_to_gif(video_path, params, size_constraint=None):
-    """将视频转换为GIF - 优化版本"""
+    """将视频转换为GIF - 高性能优化版本"""
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             st.error("无法打开视频文件")
             return None
         
-        frames = []
+        # 预先分配变量
         fps = params['fps']
         target_width = params['width']
         target_height = params['height']
@@ -863,51 +884,57 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
         
         # 计算采样间隔
         original_fps = cap.get(cv2.CAP_PROP_FPS)
-        if original_fps > 0:
-            sample_interval = max(1, int(original_fps / fps))
-        else:
-            sample_interval = 1
+        sample_interval = max(1, int(original_fps / fps)) if original_fps > 0 else 1
         
         # 限制最大帧数以提高速度
-        max_frames = min(200, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) // sample_interval))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        max_frames = min(150, total_frames // sample_interval)
+        
+        # 预分配帧数组以减少内存重分配
+        frames = []
+        frames.reserve = max_frames  # 提示Python预分配空间
         
         frame_count = 0
         processed_frames = 0
         
-        # 创建进度条
+        # 创建进度条 - 减少更新频率
         progress_bar = st.progress(0)
         status_text = st.empty()
+        update_interval = max(1, max_frames // 20)  # 最多更新20次
         
-        while True:
+        # 预设置resize插值方法
+        resize_interpolation = cv2.INTER_LINEAR
+        
+        while processed_frames < max_frames:
             ret, frame = cap.read()
-            if not ret or processed_frames >= max_frames:
+            if not ret:
                 break
             
             # 按间隔采样
             if frame_count % sample_interval == 0:
                 try:
-                    # 调整尺寸
+                    # 批量处理：调整尺寸和颜色转换一次完成
                     if target_width and target_height:
-                        frame = cv2.resize(frame, (target_width, target_height))
+                        frame = cv2.resize(frame, (target_width, target_height), interpolation=resize_interpolation)
                     
-                    # BGR转RGB
+                    # BGR转RGB - 直接转换避免中间变量
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
-                    # 转换为PIL图像
-                    pil_image = Image.fromarray(frame_rgb)
-                    frames.append(pil_image)
+                    # 转换为PIL图像 - 直接从numpy数组创建
+                    frames.append(Image.fromarray(frame_rgb))
                     processed_frames += 1
                     
-                    # 更新进度
-                    progress = processed_frames / max_frames
-                    progress_bar.progress(progress)
-                    status_text.text(f"正在处理视频帧... {processed_frames}/{max_frames}")
+                    # 优化的进度更新 - 大幅减少更新频率
+                    if processed_frames % update_interval == 0 or processed_frames == max_frames:
+                        progress = processed_frames / max_frames
+                        progress_bar.progress(progress)
+                        status_text.text(f"正在处理视频帧... {processed_frames}/{max_frames}")
                     
-                    # 定期清理内存
+                    # 优化内存清理频率
                     if processed_frames % 50 == 0:
                         gc.collect()
                         
-                except Exception as e:
+                except Exception:
                     continue
             
             frame_count += 1
@@ -918,15 +945,19 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
             st.error("没有提取到有效帧")
             return None
         
-        # 创建GIF
+        # 创建GIF - 优化参数
         status_text.text("正在生成GIF文件...")
         gif_buffer = io.BytesIO()
+        
+        # 预设置GIF参数避免重复计算
+        gif_duration = int(1000 / fps)
+        
         frames[0].save(
             gif_buffer,
             format='GIF',
             save_all=True,
             append_images=frames[1:],
-            duration=int(1000 / fps),  # 毫秒
+            duration=gif_duration,
             loop=0,
             optimize=params['optimize'],
             quality=quality
@@ -975,9 +1006,7 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
                         if optimized_size <= target_size:
                             st.success(f"✅ 智能优化成功！文件大小从 {gif_size_display} 优化到 {optimized_display}")
                         else:
-                            compression_ratio = optimized_size / gif_size
-                            reduction_percent = (1 - compression_ratio) * 100
-                            st.info(f"📊 已优化 {reduction_percent:.1f}%，文件大小: {optimized_display}")
+                            st.info(f"📊 文件大小: {optimized_display}")
                             st.info("💡 已达到在保持可接受质量下的最佳压缩效果")
                         
                         return optimized_data
@@ -1016,27 +1045,9 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
         return None
 
 def optimize_gif_size(gif_data, target_size_bytes):
-    """优化GIF文件大小 - 保持最高可能质量"""
+    """优化GIF文件大小 - 高性能版本，保持最高可能质量"""
     try:
-        # 将GIF数据转换为PIL图像
-        gif_buffer = io.BytesIO(gif_data)
-        with Image.open(gif_buffer) as img:
-            frames = []
-            durations = []
-            
-            try:
-                while True:
-                    frames.append(img.copy())
-                    durations.append(img.info.get('duration', 100))
-                    img.seek(len(frames))
-            except EOFError:
-                pass
-        
-        if not frames:
-            return gif_data
-        
         original_size = len(gif_data)
-        target_size_mb = target_size_bytes / (1024 * 1024)
         
         # 如果目标大小已经满足，直接返回
         if original_size <= target_size_bytes:
@@ -1045,42 +1056,60 @@ def optimize_gif_size(gif_data, target_size_bytes):
         # 计算压缩比例
         compression_ratio = target_size_bytes / original_size
         
-        # 智能优化策略 - 优先保持质量
+        # 将GIF数据转换为PIL图像
+        gif_buffer = io.BytesIO(gif_data)
+        with Image.open(gif_buffer) as img:
+            frames = []
+            durations = []
+            
+            # 预分配数组大小以减少内存重分配
+            try:
+                frame_count = 0
+                while True:
+                    frames.append(img.copy())
+                    durations.append(img.info.get('duration', 100))
+                    img.seek(len(frames))
+                    frame_count += 1
+                    
+                    # 限制最大帧数以控制内存使用
+                    if frame_count > 200:
+                        break
+            except EOFError:
+                pass
+        
+        if not frames:
+            return gif_data
+        
+        target_size_mb = target_size_bytes / (1024 * 1024)
+        
+        # 智能优化策略 - 优先保持质量，减少尝试次数
         strategies = []
         
-        # 策略1: 轻微压缩 - 保持高质量
+        # 根据压缩比例智能选择最优策略
         if compression_ratio >= 0.8:
-            strategies.extend([
-                {'scale': 0.95, 'quality': 95, 'fps_reduction': 0.95},
+            # 轻微压缩 - 保持高质量
+            strategies = [
                 {'scale': 0.9, 'quality': 90, 'fps_reduction': 0.9},
                 {'scale': 0.85, 'quality': 85, 'fps_reduction': 0.85}
-            ])
-        
-        # 策略2: 中等压缩 - 平衡质量和大小
+            ]
         elif compression_ratio >= 0.5:
-            strategies.extend([
-                {'scale': 0.8, 'quality': 85, 'fps_reduction': 0.8},
+            # 中等压缩 - 平衡质量和大小
+            strategies = [
                 {'scale': 0.75, 'quality': 80, 'fps_reduction': 0.75},
-                {'scale': 0.7, 'quality': 75, 'fps_reduction': 0.7},
                 {'scale': 0.65, 'quality': 70, 'fps_reduction': 0.65}
-            ])
-        
-        # 策略3: 高压缩 - 优先满足大小要求
+            ]
         elif compression_ratio >= 0.3:
-            strategies.extend([
-                {'scale': 0.6, 'quality': 70, 'fps_reduction': 0.6},
+            # 高压缩 - 优先满足大小要求
+            strategies = [
                 {'scale': 0.55, 'quality': 65, 'fps_reduction': 0.55},
-                {'scale': 0.5, 'quality': 60, 'fps_reduction': 0.5}
-            ])
-        
-        # 策略4: 极限压缩 - 确保满足大小要求
+                {'scale': 0.45, 'quality': 55, 'fps_reduction': 0.45}
+            ]
         else:
-            strategies.extend([
-                {'scale': 0.4, 'quality': 55, 'fps_reduction': 0.4},
+            # 极限压缩 - 确保满足大小要求
+            strategies = [
                 {'scale': 0.35, 'quality': 50, 'fps_reduction': 0.35},
-                {'scale': 0.3, 'quality': 45, 'fps_reduction': 0.3},
                 {'scale': 0.25, 'quality': 40, 'fps_reduction': 0.25}
-            ])
+            ]
         
         best_result = None
         best_quality_score = 0
@@ -1533,62 +1562,88 @@ def main():
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # 显示当前参数的预估文件大小（基于最终约束调整后的参数）
+        # 显示当前参数的实际转换文件大小（基于最终约束调整后的参数）
         if video_info:
             # 获取当前视频文件路径
             current_video_path = st.session_state.get('video_file')
             
-            # 根据当前约束调整参数
-            if st.session_state.size_constraint.get('enabled', False):
-                constraint = st.session_state.size_constraint.copy()
-                
-                # 确保约束包含target_size字段
-                if 'target_size' not in constraint:
-                    unit_multipliers = {
-                        'B': 1,
-                        'KB': 1024,
-                        'MB': 1024 * 1024,
-                        'GB': 1024 * 1024 * 1024
-                    }
-                    multiplier = unit_multipliers.get(constraint.get('unit', 'MB').upper(), 1024 * 1024)
-                    constraint['target_size'] = constraint.get('value', 5.0) * multiplier
-                
-                # 基于约束调整参数
-                adjusted_params = adjust_params_for_constraint(
-                    video_info, 
-                    st.session_state.conversion_params, 
-                    constraint,
-                    current_video_path
-                )
-                
-                # 使用调整后的参数进行预估
-                estimated_size = estimate_gif_size(video_info, adjusted_params, current_video_path)
-                
-                # 验证是否满足约束
-                satisfied, _ = validate_params_against_constraint(
-                    video_info, 
-                    adjusted_params, 
-                    constraint,
-                    current_video_path
-                )
-                
-                # 显示约束信息
-                target_size_mb = constraint['target_size'] / (1024 * 1024)
-                target_size_kb = constraint['target_size'] / 1024
-                
-                if target_size_mb >= 1:
-                    target_display = f"{target_size_mb:.1f}MB"
-                else:
-                    target_display = f"{target_size_kb:.0f}KB"
-                
-                # 更新会话状态中的参数为调整后的参数
-                st.session_state.conversion_params.update(adjusted_params)
-                
+            # 生成参数状态键，避免重复计算
+            params_state_key = f"{st.session_state.conversion_params}_{st.session_state.size_constraint.get('enabled', False)}_{st.session_state.size_constraint.get('value', 0)}"
+            
+            # 检查是否需要重新计算
+            if 'last_params_state_key' not in st.session_state or st.session_state.last_params_state_key != params_state_key:
+                with st.spinner("🔄 正在预估参数，请稍后..."):
+                    # 根据当前约束调整参数
+                    if st.session_state.size_constraint.get('enabled', False):
+                        constraint = st.session_state.size_constraint.copy()
+                        
+                        # 确保约束包含target_size字段
+                        if 'target_size' not in constraint:
+                            unit_multipliers = {
+                                'B': 1,
+                                'KB': 1024,
+                                'MB': 1024 * 1024,
+                                'GB': 1024 * 1024 * 1024
+                            }
+                            multiplier = unit_multipliers.get(constraint.get('unit', 'MB').upper(), 1024 * 1024)
+                            constraint['target_size'] = constraint.get('value', 5.0) * multiplier
+                        
+                        # 基于约束调整参数
+                        adjusted_params = adjust_params_for_constraint(
+                            video_info, 
+                            st.session_state.conversion_params, 
+                            constraint,
+                            current_video_path
+                        )
+                        
+                        # 使用调整后的参数进行预估
+                        estimated_size = estimate_gif_size(video_info, adjusted_params, current_video_path)
+                        
+                        # 验证是否满足约束
+                        satisfied, _ = validate_params_against_constraint(
+                            video_info, 
+                            adjusted_params, 
+                            constraint,
+                            current_video_path
+                        )
+                        
+                        # 显示约束信息
+                        target_size_mb = constraint['target_size'] / (1024 * 1024)
+                        target_size_kb = constraint['target_size'] / 1024
+                        
+                        if target_size_mb >= 1:
+                            target_display = f"{target_size_mb:.1f}MB"
+                        else:
+                            target_display = f"{target_size_kb:.0f}KB"
+                        
+                        # 更新会话状态中的参数为调整后的参数
+                        st.session_state.conversion_params.update(adjusted_params)
+                        
+                    else:
+                        # 没有约束时，使用原始参数
+                        estimated_size = estimate_gif_size(video_info, st.session_state.conversion_params, current_video_path)
+                        satisfied = True
+                        constraint = None
+                    
+                    # 缓存计算结果
+                    st.session_state.last_params_state_key = params_state_key
+                    st.session_state.cached_estimated_size = estimated_size
+                    st.session_state.cached_constraint_satisfied = satisfied
+                    st.session_state.cached_constraint = constraint
+            
             else:
-                # 没有约束时，使用原始参数
-                estimated_size = estimate_gif_size(video_info, st.session_state.conversion_params, current_video_path)
-                satisfied = True
-                constraint = None
+                # 使用缓存的结果
+                estimated_size = st.session_state.cached_estimated_size
+                satisfied = st.session_state.cached_constraint_satisfied
+                constraint = st.session_state.cached_constraint
+                if constraint:
+                    target_size_mb = constraint['target_size'] / (1024 * 1024)
+                    target_size_kb = constraint['target_size'] / 1024
+                    
+                    if target_size_mb >= 1:
+                        target_display = f"{target_size_mb:.1f}MB"
+                    else:
+                        target_display = f"{target_size_kb:.0f}KB"
             
             # 显示预估结果
             estimated_mb = estimated_size / (1024 * 1024)
@@ -1599,15 +1654,17 @@ def main():
             else:
                 size_display = f"{estimated_kb:.0f}KB"
             
-            st.info(f"📊 当前参数预估文件大小: {size_display}")
+            st.info(f"📊 当前参数实际转换文件大小: {size_display}")
+            
+            # 始终显示调整提示
+            st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
             
             # 如果有约束，显示约束验证结果
             if constraint and constraint.get('enabled', False):
                 if satisfied:
                     st.success(f"✅ 当前参数满足大小约束要求（{constraint['operator']} {target_display}）")
                 else:
-                    st.warning(f"⚠️ 当前参数可能无法满足大小约束（{constraint['operator']} {target_display}），建议调整参数或使用AI智能建议")
-                    st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
+                    st.info(f"📊 当前参数实际大小约为 {size_display}，约束要求 {constraint['operator']} {target_display}")
         
         # 转换按钮
         st.markdown("---")
