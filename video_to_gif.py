@@ -253,17 +253,25 @@ def generate_ai_suggestions(video_props, user_input=""):
 2. 结合视频技术参数，提供专业的转换参数建议
 3. 平衡文件大小、视觉质量和加载速度的关系
 4. 针对不同应用场景提供最优解决方案
+5. 确保建议的参数组合能够实际达到约束的文件大小要求
 
 技术专业知识：
 - GIF格式特性：调色板限制、循环播放、逐帧压缩
 - 关键参数影响：帧率影响流畅度、质量影响色彩保真度、分辨率影响清晰度
 - 压缩策略：关键帧采样、色彩量化、尺寸缩放的综合运用
 - 应用场景优化：社交媒体、网页展示、邮件附件等不同需求
+- 文件大小预估：基于分辨率、帧率、质量的实际文件大小估算
+
+重要原则：
+- 建议的文件大小约束必须是可实现的，不能设置过于严格的限制
+- 当原视频分辨率很高时，必须适当降低目标分辨率以控制文件大小
+- 长时间视频需要更保守的参数设置
+- 优先保证参数组合的可行性，而不是追求极限参数
 
 回复格式要求：
 返回一个JSON数组，包含2-4个建议方案。每个方案必须包含：
 - name: 方案名称（简洁有力，体现特色）
-- description: 详细说明（说明适用场景和优势）
+- description: 详细说明（说明适用场景和优势，如果可能请包含预估文件大小）
 - params: 技术参数
   - fps: 帧率 (1-30)
   - quality: 质量百分比 (50-100)
@@ -280,17 +288,17 @@ def generate_ai_suggestions(video_props, user_input=""):
 [
   {
     "name": "高质量专业版",
-    "description": "保持最高视觉质量，适合专业展示和高质量要求场景",
+    "description": "保持最高视觉质量，适合专业展示和高质量要求场景（预估8-12MB）",
     "params": {
-      "fps": 15,
-      "quality": 95,
-      "width": 1280,
-      "height": 720,
+      "fps": 12,
+      "quality": 90,
+      "width": 1080,
+      "height": 608,
       "optimize": true
     },
     "size_constraint": {
       "operator": "<",
-      "value": 10.0,
+      "value": 15.0,
       "unit": "MB",
       "enabled": true
     }
@@ -301,7 +309,9 @@ def generate_ai_suggestions(video_props, user_input=""):
 - 必须返回有效的JSON格式
 - 参数值必须在合理范围内
 - 建议方案要有明显区别和针对性
-- 文件大小约束要现实可行"""
+- 文件大小约束要现实可行，留有余量
+- 高分辨率视频必须适当缩放以控制文件大小
+- 长视频（>30秒）需要更保守的参数设置"""
 
         # 构建用户查询
         user_prompt = f"""请为以下视频转GIF需求提供专业建议：
@@ -346,6 +356,38 @@ def generate_ai_suggestions(video_props, user_input=""):
                     validated_suggestions = []
                     for suggestion in suggestions:
                         if validate_suggestion(suggestion, video_props):
+                            # 进一步验证参数是否能满足大小约束
+                            if 'size_constraint' in suggestion and suggestion['size_constraint'].get('enabled', False):
+                                adjusted_params = adjust_params_for_constraint(
+                                    video_props, 
+                                    suggestion['params'], 
+                                    suggestion['size_constraint']
+                                )
+                                
+                                # 更新建议的参数为调整后的参数
+                                suggestion['params'] = adjusted_params
+                                
+                                # 验证调整后的参数
+                                satisfied, estimated_size = validate_params_against_constraint(
+                                    video_props, 
+                                    adjusted_params, 
+                                    suggestion['size_constraint']
+                                )
+                                
+                                # 如果仍然不满足，调整约束
+                                if not satisfied and estimated_size:
+                                    new_target_size = estimated_size * 1.3  # 留30%余量
+                                    new_target_mb = new_target_size / (1024 * 1024)
+                                    suggestion['size_constraint']['value'] = round(new_target_mb, 1)
+                                    suggestion['size_constraint']['target_size'] = new_target_size
+                                    
+                                    # 更新描述
+                                    if "（预估" not in suggestion['description']:
+                                        suggestion['description'] += f"（预估约{new_target_mb:.1f}MB）"
+                                
+                                # 添加预估大小信息
+                                suggestion['estimated_size'] = estimate_gif_size(video_props, adjusted_params)
+                            
                             validated_suggestions.append(suggestion)
                     
                     if validated_suggestions:
@@ -410,7 +452,7 @@ def validate_suggestion(suggestion, video_props):
         return False
 
 def get_fallback_suggestions(video_props, user_input=""):
-    """获取备选建议（当AI失败时使用）"""
+    """获取备选建议（当AI失败时使用）- 基于实际预估的智能建议"""
     fps = video_props['fps']
     width = video_props['width']
     height = video_props['height']
@@ -419,47 +461,33 @@ def get_fallback_suggestions(video_props, user_input=""):
     
     suggestions = []
     
-    # 高质量版本
-    suggestions.append({
-        'name': '高质量专业版',
-        'description': '保持最高视觉质量，适合专业展示和演示用途',
-        'params': {
-            'fps': min(int(fps), 15),
-            'quality': 95,
-            'width': width,
-            'height': height,
-            'optimize': True
+    # 基础参数模板
+    base_templates = [
+        {
+            'name': '高质量专业版',
+            'description': '保持最高视觉质量，适合专业展示和演示用途',
+            'params': {
+                'fps': min(int(fps), 15),
+                'quality': 95,
+                'width': width,
+                'height': height,
+                'optimize': True
+            },
+            'target_size_mb': 10.0
         },
-        'size_constraint': {
-            'operator': '<',
-            'value': 10.0,
-            'unit': 'MB',
-            'enabled': True
-        }
-    })
-    
-    # 平衡版本
-    suggestions.append({
-        'name': '平衡优化版',
-        'description': '质量与文件大小的最佳平衡，适合一般分享使用',
-        'params': {
-            'fps': min(int(fps), 12),
-            'quality': 85,
-            'width': min(width, 640),
-            'height': min(height, 480),
-            'optimize': True
+        {
+            'name': '平衡优化版',
+            'description': '质量与文件大小的最佳平衡，适合一般分享使用',
+            'params': {
+                'fps': min(int(fps), 12),
+                'quality': 85,
+                'width': min(width, 640),
+                'height': min(height, 480),
+                'optimize': True
+            },
+            'target_size_mb': 5.0
         },
-        'size_constraint': {
-            'operator': '<',
-            'value': 5.0,
-            'unit': 'MB',
-            'enabled': True
-        }
-    })
-    
-    # 压缩版本
-    if duration > 10 or file_size > 20 * 1024 * 1024:
-        suggestions.append({
+        {
             'name': '小文件分享版',
             'description': '大幅压缩文件大小，适合网络传输和存储空间有限的场景',
             'params': {
@@ -469,15 +497,190 @@ def get_fallback_suggestions(video_props, user_input=""):
                 'height': min(height, 360),
                 'optimize': True
             },
-            'size_constraint': {
-                'operator': '<',
-                'value': 2.0,
-                'unit': 'MB',
-                'enabled': True
-            }
+            'target_size_mb': 2.0
+        }
+    ]
+    
+    # 处理每个模板，确保参数可行
+    for template in base_templates:
+        # 跳过不合适的建议（例如短视频不需要小文件版本）
+        if template['name'] == '小文件分享版' and duration <= 10 and file_size <= 20 * 1024 * 1024:
+            continue
+        
+        target_size_bytes = template['target_size_mb'] * 1024 * 1024
+        size_constraint = {
+            'operator': '<',
+            'value': template['target_size_mb'],
+            'unit': 'MB',
+            'enabled': True,
+            'target_size': target_size_bytes
+        }
+        
+        # 调整参数以满足大小约束
+        adjusted_params = adjust_params_for_constraint(video_props, template['params'], size_constraint)
+        
+        # 验证调整后的参数
+        satisfied, estimated_size = validate_params_against_constraint(video_props, adjusted_params, size_constraint)
+        
+        # 如果仍然不满足约束，进一步调整目标大小
+        if not satisfied and estimated_size:
+            # 将目标大小调整为预估大小的1.2倍（留一些余量）
+            new_target_size = estimated_size * 1.2
+            new_target_mb = new_target_size / (1024 * 1024)
+            
+            # 更新约束
+            size_constraint['value'] = round(new_target_mb, 1)
+            size_constraint['target_size'] = new_target_size
+            
+            # 更新描述，说明实际可达到的大小
+            if template['name'] == '高质量专业版':
+                template['description'] += f"（预估约{new_target_mb:.1f}MB）"
+            elif template['name'] == '平衡优化版':
+                template['description'] += f"（预估约{new_target_mb:.1f}MB）"
+            elif template['name'] == '小文件分享版':
+                template['description'] += f"（预估约{new_target_mb:.1f}MB）"
+        
+        suggestions.append({
+            'name': template['name'],
+            'description': template['description'],
+            'params': adjusted_params,
+            'size_constraint': size_constraint,
+            'estimated_size': estimate_gif_size(video_props, adjusted_params)
         })
     
     return suggestions
+
+def estimate_gif_size(video_props, params):
+    """预估GIF文件大小"""
+    try:
+        # 基础计算参数
+        width = params.get('width', video_props['width'])
+        height = params.get('height', video_props['height'])
+        fps = params.get('fps', 10)
+        quality = params.get('quality', 85)
+        duration = video_props['duration']
+        
+        # 计算预估帧数
+        estimated_frames = min(200, int(duration * fps))
+        
+        # 基于经验公式预估文件大小
+        # 每帧像素数
+        pixels_per_frame = width * height
+        
+        # 基础字节数估算（考虑GIF压缩特性）
+        # GIF使用LZW压缩，压缩比受图像复杂度影响很大
+        base_bytes_per_pixel = 0.5  # 基础值
+        
+        # 质量影响因子
+        quality_factor = quality / 100.0
+        
+        # 复杂度因子（基于分辨率）
+        complexity_factor = min(2.0, (pixels_per_frame / (320 * 240)) ** 0.5)
+        
+        # 帧数影响（更多帧数会有更好的压缩）
+        frame_compression_factor = max(0.7, 1.0 - (estimated_frames / 1000.0))
+        
+        # 计算预估大小
+        estimated_size = (
+            pixels_per_frame * 
+            estimated_frames * 
+            base_bytes_per_pixel * 
+            quality_factor * 
+            complexity_factor * 
+            frame_compression_factor
+        )
+        
+        # 添加GIF头部和元数据开销
+        overhead = 1024 + (estimated_frames * 50)  # 每帧约50字节开销
+        estimated_size += overhead
+        
+        # 考虑优化选项
+        if params.get('optimize', True):
+            estimated_size *= 0.85  # 优化可减少约15%大小
+        
+        return int(estimated_size)
+        
+    except Exception as e:
+        # 如果预估失败，返回一个保守估计
+        return video_props['file_size'] // 4
+
+def validate_params_against_constraint(video_props, params, size_constraint):
+    """验证参数是否能满足大小约束"""
+    if not size_constraint or not size_constraint.get('enabled'):
+        return True, None
+    
+    estimated_size = estimate_gif_size(video_props, params)
+    target_size = size_constraint['target_size']
+    operator = size_constraint['operator']
+    
+    # 检查是否满足约束
+    satisfied = False
+    if operator == '<':
+        satisfied = estimated_size < target_size
+    elif operator == '<=':
+        satisfied = estimated_size <= target_size
+    elif operator == '>':
+        satisfied = estimated_size > target_size
+    elif operator == '>=':
+        satisfied = estimated_size >= target_size
+    elif operator == '=':
+        # 允许10%的误差
+        satisfied = abs(estimated_size - target_size) / target_size <= 0.1
+    
+    return satisfied, estimated_size
+
+def adjust_params_for_constraint(video_props, base_params, size_constraint):
+    """根据大小约束调整参数"""
+    if not size_constraint or not size_constraint.get('enabled'):
+        return base_params
+    
+    target_size = size_constraint['target_size']
+    operator = size_constraint['operator']
+    
+    # 只对小于类型的约束进行自动调整
+    if operator not in ['<', '<=']:
+        return base_params
+    
+    # 创建参数副本
+    adjusted_params = base_params.copy()
+    
+    # 预估当前参数的文件大小
+    current_estimated = estimate_gif_size(video_props, adjusted_params)
+    
+    if current_estimated <= target_size:
+        return adjusted_params
+    
+    # 需要压缩，计算压缩比例
+    compression_ratio = target_size / current_estimated
+    
+    # 保守的调整策略
+    if compression_ratio >= 0.8:
+        # 轻微调整
+        adjusted_params['quality'] = max(75, int(adjusted_params['quality'] * 0.95))
+        adjusted_params['fps'] = max(8, int(adjusted_params['fps'] * 0.9))
+    elif compression_ratio >= 0.6:
+        # 中等调整
+        scale_factor = compression_ratio ** 0.3
+        adjusted_params['width'] = max(160, int(adjusted_params['width'] * scale_factor))
+        adjusted_params['height'] = max(120, int(adjusted_params['height'] * scale_factor))
+        adjusted_params['quality'] = max(70, int(adjusted_params['quality'] * 0.9))
+        adjusted_params['fps'] = max(6, int(adjusted_params['fps'] * 0.8))
+    elif compression_ratio >= 0.4:
+        # 较大调整
+        scale_factor = compression_ratio ** 0.4
+        adjusted_params['width'] = max(120, int(adjusted_params['width'] * scale_factor))
+        adjusted_params['height'] = max(90, int(adjusted_params['height'] * scale_factor))
+        adjusted_params['quality'] = max(65, int(adjusted_params['quality'] * 0.85))
+        adjusted_params['fps'] = max(5, int(adjusted_params['fps'] * 0.7))
+    else:
+        # 激进调整
+        scale_factor = compression_ratio ** 0.5
+        adjusted_params['width'] = max(80, int(adjusted_params['width'] * scale_factor))
+        adjusted_params['height'] = max(60, int(adjusted_params['height'] * scale_factor))
+        adjusted_params['quality'] = max(60, int(adjusted_params['quality'] * 0.8))
+        adjusted_params['fps'] = max(4, int(adjusted_params['fps'] * 0.6))
+    
+    return adjusted_params
 
 def parse_size_constraint(operator, value, unit):
     """解析文件大小约束"""
@@ -622,7 +825,7 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
             # 强制优化逻辑 - 当设置为小于某数值时，强制调整到目标大小以下
             if operator in ['<', '<=']:
                 if gif_size > target_size:
-                    status_text.text(f"正在强制优化GIF文件大小到 {target_size_display} 以下...")
+                    status_text.text(f"正在智能优化GIF文件大小到 {target_size_display} 以下...")
                     optimized_data = optimize_gif_size(gif_data, target_size)
                     if optimized_data:
                         optimized_size = len(optimized_data)
@@ -635,17 +838,20 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
                             optimized_display = f"{optimized_size_kb:.1f}KB"
                         
                         if optimized_size <= target_size:
-                            st.success(f"✅ 优化成功！文件大小从 {gif_size_display} 减小到 {optimized_display}")
+                            st.success(f"✅ 智能优化成功！文件大小从 {gif_size_display} 优化到 {optimized_display}")
                         else:
-                            st.warning(f"⚠️ 优化后文件大小 {optimized_display}，仍超过目标 {target_size_display}")
-                            st.info("💡 建议：请尝试调整'缩放比例'参数来进一步压缩文件大小")
+                            compression_ratio = optimized_size / gif_size
+                            reduction_percent = (1 - compression_ratio) * 100
+                            st.info(f"📊 已优化 {reduction_percent:.1f}%，文件大小: {optimized_display}")
+                            st.info("💡 已达到在保持可接受质量下的最佳压缩效果")
                         
                         return optimized_data
                     else:
-                        st.error("❌ 优化失败，返回原始文件")
+                        st.warning("⚠️ 智能优化未能显著减小文件大小，返回原始文件")
+                        st.info("💡 建议：使用AI智能建议功能或手动调整参数（降低分辨率、帧率或质量）")
                         return gif_data
                 else:
-                    st.success(f"✅ 文件大小 {gif_size_display} 已满足约束要求 {target_size_display}")
+                    st.success(f"✅ 文件大小 {gif_size_display} 已满足约束要求 ≤ {target_size_display}")
             
             elif operator in ['>', '>=']:
                 if gif_size < target_size:
@@ -1024,11 +1230,26 @@ def main():
             cols = st.columns(len(st.session_state.ai_suggestions))
             for i, suggestion in enumerate(st.session_state.ai_suggestions):
                 with cols[i]:
-                    # 构建文件大小约束显示信息
-                    size_constraint_info = ""
+                    # 构建文件大小约束和预估信息
+                    size_info_parts = []
+                    
+                    # 添加预估大小信息
+                    if 'estimated_size' in suggestion:
+                        estimated_mb = suggestion['estimated_size'] / (1024 * 1024)
+                        if estimated_mb >= 1:
+                            size_info_parts.append(f"预估: {estimated_mb:.1f}MB")
+                        else:
+                            estimated_kb = suggestion['estimated_size'] / 1024
+                            size_info_parts.append(f"预估: {estimated_kb:.0f}KB")
+                    
+                    # 添加约束信息
                     if 'size_constraint' in suggestion and suggestion['size_constraint']['enabled']:
                         constraint = suggestion['size_constraint']
-                        size_constraint_info = f" | 文件大小: {constraint['operator']} {constraint['value']}{constraint['unit']}"
+                        size_info_parts.append(f"约束: {constraint['operator']} {constraint['value']}{constraint['unit']}")
+                    
+                    size_constraint_info = ""
+                    if size_info_parts:
+                        size_constraint_info = " | " + " | ".join(size_info_parts)
                     
                     st.markdown(f"""
                     <div class="ai-suggestion">
@@ -1108,6 +1329,34 @@ def main():
             'height': target_height,
             'optimize': optimize
         })
+        
+        # 显示当前参数的预估文件大小
+        if video_info:
+            estimated_size = estimate_gif_size(video_info, st.session_state.conversion_params)
+            estimated_mb = estimated_size / (1024 * 1024)
+            estimated_kb = estimated_size / 1024
+            
+            if estimated_mb >= 1:
+                size_display = f"{estimated_mb:.1f}MB"
+            else:
+                size_display = f"{estimated_kb:.0f}KB"
+            
+            st.info(f"📊 当前参数预估文件大小: {size_display}")
+            
+            # 如果有大小约束，检查是否满足
+            if st.session_state.size_constraint.get('enabled', False):
+                constraint = st.session_state.size_constraint
+                satisfied, _ = validate_params_against_constraint(
+                    video_info, 
+                    st.session_state.conversion_params, 
+                    constraint
+                )
+                
+                if satisfied:
+                    st.success(f"✅ 当前参数满足大小约束要求")
+                else:
+                    st.warning(f"⚠️ 当前参数可能无法满足大小约束，建议调整参数或使用AI智能建议")
+                    st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
         
         # 文件大小约束设置
         st.markdown('<div class="constraint-section">', unsafe_allow_html=True)
