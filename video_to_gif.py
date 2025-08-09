@@ -24,13 +24,17 @@ except Exception as e:
     st.info("💡 这可能是由于缺少系统依赖库导致的，请尝试使用opencv-python-headless")
     st.stop()
 
-# 页面配置
-st.set_page_config(
-    page_title="视频转GIF工具 - Findknow AI",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# 页面配置（如果还没有设置的话）
+try:
+    st.set_page_config(
+        page_title="视频转GIF工具 - Findknow AI",
+        page_icon="🎬",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
+except st.errors.StreamlitAPIException:
+    # 页面配置已经设置过了，跳过
+    pass
 
 # AI配置
 AI_CONFIG = {
