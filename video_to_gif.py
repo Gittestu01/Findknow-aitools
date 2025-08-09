@@ -1471,6 +1471,15 @@ def main():
                     st.session_state.ai_suggestions_cache.clear()
                 if 'ai_suggestions' in st.session_state:
                     del st.session_state.ai_suggestions
+                
+                # 清除所有建议应用状态
+                keys_to_remove = []
+                for key in st.session_state.keys():
+                    if key.startswith('suggestion_') and key.endswith('_applied'):
+                        keys_to_remove.append(key)
+                for key in keys_to_remove:
+                    del st.session_state[key]
+                
                 st.success("✅ 缓存已清除，请重新获取AI建议")
                 st.rerun()
         
@@ -1542,54 +1551,71 @@ def main():
                                 st.error(f"显示建议信息时出错: {str(e)}")
                                 st.json(suggestion)  # 调试用，显示原始建议数据
                             
-                            if st.button(f"使用此建议", key=f"use_suggestion_{i}", use_container_width=True):
+                            # 创建唯一的会话状态键来跟踪按钮点击
+                            button_clicked_key = f"suggestion_{i}_applied"
+                            
+                            if button_clicked_key not in st.session_state:
+                                st.session_state[button_clicked_key] = False
+                            
+                            # 如果已经应用过，显示不同的按钮
+                            if st.session_state[button_clicked_key]:
+                                st.button("✅ 已应用", key=f"applied_suggestion_{i}", disabled=True, use_container_width=True)
+                            elif st.button(f"使用此建议", key=f"use_suggestion_{i}", use_container_width=True):
+                                # 最简化的安全实现
+                                success = False
                                 try:
-                                    # 安全地应用转换参数
-                                    if 'params' in suggestion and suggestion['params']:
-                                        # 确保所有参数都是正确的类型和值
-                                        params = suggestion['params'].copy()
+                                    # 检查建议是否有效
+                                    if not suggestion or not isinstance(suggestion, dict):
+                                        st.error("❌ 建议数据无效")
+                                    else:
+                                        # 尝试应用参数
+                                        if 'params' in suggestion:
+                                            params = suggestion['params']
+                                            if params and isinstance(params, dict):
+                                                # 使用最保守的方法设置参数
+                                                if 'fps' in params:
+                                                    st.session_state.conversion_params['fps'] = int(params['fps'])
+                                                if 'quality' in params:
+                                                    st.session_state.conversion_params['quality'] = int(params['quality'])
+                                                if 'width' in params:
+                                                    st.session_state.conversion_params['width'] = int(params['width'])
+                                                if 'height' in params:
+                                                    st.session_state.conversion_params['height'] = int(params['height'])
+                                                if 'optimize' in params:
+                                                    st.session_state.conversion_params['optimize'] = bool(params['optimize'])
+                                                success = True
                                         
-                                        # 验证和转换参数类型
-                                        validated_params = {
-                                            'fps': int(params.get('fps', 10)),
-                                            'quality': int(params.get('quality', 85)),
-                                            'width': int(params.get('width', 640)),
-                                            'height': int(params.get('height', 480)),
-                                            'optimize': bool(params.get('optimize', True))
-                                        }
+                                        # 尝试应用约束
+                                        if 'size_constraint' in suggestion:
+                                            constraint = suggestion['size_constraint']
+                                            if constraint and isinstance(constraint, dict):
+                                                if 'operator' in constraint:
+                                                    st.session_state.size_constraint['operator'] = str(constraint['operator'])
+                                                if 'value' in constraint:
+                                                    st.session_state.size_constraint['value'] = float(constraint['value'])
+                                                if 'unit' in constraint:
+                                                    st.session_state.size_constraint['unit'] = str(constraint['unit'])
+                                                if 'enabled' in constraint:
+                                                    st.session_state.size_constraint['enabled'] = bool(constraint['enabled'])
+                                                # 重新计算target_size
+                                                value = st.session_state.size_constraint['value']
+                                                unit = st.session_state.size_constraint['unit']
+                                                multipliers = {'B': 1, 'KB': 1024, 'MB': 1048576, 'GB': 1073741824}
+                                                st.session_state.size_constraint['target_size'] = value * multipliers.get(unit.upper(), 1048576)
+                                                success = True
                                         
-                                        st.session_state.conversion_params.update(validated_params)
-                                    
-                                    # 安全地应用文件大小约束
-                                    if 'size_constraint' in suggestion and suggestion['size_constraint']:
-                                        constraint = suggestion['size_constraint'].copy()
+                                        if success:
+                                            st.session_state[button_clicked_key] = True
+                                            st.success("✅ 建议已成功应用！")
+                                            st.balloons()
+                                        else:
+                                            st.warning("⚠️ 建议数据不完整，无法应用")
                                         
-                                        # 验证约束参数
-                                        validated_constraint = {
-                                            'operator': str(constraint.get('operator', '<')),
-                                            'value': float(constraint.get('value', 5.0)),
-                                            'unit': str(constraint.get('unit', 'MB')),
-                                            'enabled': bool(constraint.get('enabled', True))
-                                        }
-                                        
-                                        # 计算target_size
-                                        unit_multipliers = {
-                                            'B': 1,
-                                            'KB': 1024,
-                                            'MB': 1024 * 1024,
-                                            'GB': 1024 * 1024 * 1024
-                                        }
-                                        multiplier = unit_multipliers.get(validated_constraint['unit'].upper(), 1024 * 1024)
-                                        validated_constraint['target_size'] = validated_constraint['value'] * multiplier
-                                        
-                                        st.session_state.size_constraint.update(validated_constraint)
-                                    
-                                    st.success("✅ 参数和文件大小约束已应用！")
-                                    st.rerun()
-                                    
                                 except Exception as e:
-                                    st.error(f"❌ 应用建议时出错: {str(e)}")
-                                    st.info("💡 请尝试手动调整参数")
+                                    st.error(f"❌ 应用失败: {type(e).__name__}")
+                                    if hasattr(e, 'args') and e.args:
+                                        st.code(str(e.args[0]))
+                                    st.info("💡 请手动调整参数")
             except Exception as e:
                 st.error(f"❌ 显示AI建议时出错: {str(e)}")
                 st.info("💡 请尝试重新获取建议或使用手动参数调整")
