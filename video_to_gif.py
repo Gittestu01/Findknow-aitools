@@ -6,6 +6,8 @@ from PIL import Image
 import io
 import time
 import gc
+import json
+from openai import OpenAI
 
 # 尝试导入OpenCV，如果失败则提供错误信息
 try:
@@ -29,6 +31,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# AI配置
+AI_CONFIG = {
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen-plus"
+}
 
 # 自定义CSS样式
 st.markdown("""
@@ -122,6 +130,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def get_ai_client():
+    """获取AI客户端"""
+    api_key = st.session_state.get("api_key") or st.session_state.get("api_key_persistent")
+    if not api_key:
+        return None
+    
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url=AI_CONFIG["base_url"]
+        )
+        return client
+    except Exception as e:
+        st.error(f"AI客户端初始化失败: {e}")
+        return None
+
+def check_api_key():
+    """检查API密钥是否已设置"""
+    return st.session_state.get("api_key") or st.session_state.get("api_key_persistent")
+
 def init_session_state():
     """初始化会话状态"""
     if 'video_file' not in st.session_state:
@@ -199,129 +227,244 @@ def analyze_video_properties(video_path):
         return None
 
 def generate_ai_suggestions(video_props, user_input=""):
-    """生成AI建议 - 智能分析用户意图和需求"""
-    suggestions = []
+    """生成AI建议 - 使用真实AI大模型分析用户意图和视频特征"""
+    
+    # 检查API密钥
+    if not check_api_key():
+        st.warning("⚠️ 需要设置API密钥才能使用AI智能建议功能")
+        st.info("💡 请返回主页设置API密钥，或使用下方的手动参数调整")
+        return []
+    
+    # 获取AI客户端
+    client = get_ai_client()
+    if not client:
+        st.error("❌ AI客户端初始化失败")
+        return []
     
     if not video_props:
-        return suggestions
+        return []
     
-    # 基于视频属性生成建议
+    try:
+        # 构建专业的系统提示词
+        system_prompt = """你是一位专业的视频转GIF优化专家，具备深厚的多媒体技术知识和用户体验设计经验。
+
+核心职责：
+1. 分析用户的自然语言需求，准确识别使用场景和质量期望
+2. 结合视频技术参数，提供专业的转换参数建议
+3. 平衡文件大小、视觉质量和加载速度的关系
+4. 针对不同应用场景提供最优解决方案
+
+技术专业知识：
+- GIF格式特性：调色板限制、循环播放、逐帧压缩
+- 关键参数影响：帧率影响流畅度、质量影响色彩保真度、分辨率影响清晰度
+- 压缩策略：关键帧采样、色彩量化、尺寸缩放的综合运用
+- 应用场景优化：社交媒体、网页展示、邮件附件等不同需求
+
+回复格式要求：
+返回一个JSON数组，包含2-4个建议方案。每个方案必须包含：
+- name: 方案名称（简洁有力，体现特色）
+- description: 详细说明（说明适用场景和优势）
+- params: 技术参数
+  - fps: 帧率 (1-30)
+  - quality: 质量百分比 (50-100)
+  - width: 目标宽度
+  - height: 目标高度  
+  - optimize: 是否启用优化 (true/false)
+- size_constraint: 文件大小约束
+  - operator: 比较符 ("<", ">", "=", "<=", ">=")
+  - value: 数值
+  - unit: 单位 ("B", "KB", "MB", "GB")
+  - enabled: 是否启用 (true/false)
+
+示例：
+[
+  {
+    "name": "高质量专业版",
+    "description": "保持最高视觉质量，适合专业展示和高质量要求场景",
+    "params": {
+      "fps": 15,
+      "quality": 95,
+      "width": 1280,
+      "height": 720,
+      "optimize": true
+    },
+    "size_constraint": {
+      "operator": "<",
+      "value": 10.0,
+      "unit": "MB",
+      "enabled": true
+    }
+  }
+]
+
+注意事项：
+- 必须返回有效的JSON格式
+- 参数值必须在合理范围内
+- 建议方案要有明显区别和针对性
+- 文件大小约束要现实可行"""
+
+        # 构建用户查询
+        user_prompt = f"""请为以下视频转GIF需求提供专业建议：
+
+视频技术参数：
+- 原始分辨率：{video_props['width']}×{video_props['height']}
+- 原始帧率：{video_props['fps']:.1f} FPS
+- 视频时长：{video_props['duration']:.1f}秒
+- 文件大小：{video_props['file_size'] / (1024*1024):.2f}MB
+- 总帧数：{video_props['frame_count']}帧
+
+用户需求描述：
+{user_input if user_input.strip() else "用户未提供具体需求，请提供通用的优化建议"}
+
+请基于以上信息，提供2-4个专业的GIF转换方案建议。每个方案要有明确的定位和适用场景。"""
+
+        # 调用AI进行分析
+        with st.spinner("🤖 AI正在分析视频参数和用户需求..."):
+            completion = client.chat.completions.create(
+                model=AI_CONFIG["model"],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            
+            ai_response = completion.choices[0].message.content
+            
+            # 解析AI响应
+            try:
+                # 提取JSON部分
+                json_start = ai_response.find('[')
+                json_end = ai_response.rfind(']') + 1
+                
+                if json_start != -1 and json_end != -1:
+                    json_str = ai_response[json_start:json_end]
+                    suggestions = json.loads(json_str)
+                    
+                    # 验证并处理建议
+                    validated_suggestions = []
+                    for suggestion in suggestions:
+                        if validate_suggestion(suggestion, video_props):
+                            validated_suggestions.append(suggestion)
+                    
+                    if validated_suggestions:
+                        st.success(f"✅ AI成功生成了 {len(validated_suggestions)} 个专业建议")
+                        return validated_suggestions
+                    else:
+                        st.warning("⚠️ AI生成的建议格式有误，使用默认建议")
+                        return get_fallback_suggestions(video_props, user_input)
+                
+                else:
+                    st.warning("⚠️ AI响应格式异常，使用默认建议")
+                    return get_fallback_suggestions(video_props, user_input)
+                    
+            except json.JSONDecodeError as e:
+                st.warning(f"⚠️ AI响应解析失败: {str(e)}")
+                return get_fallback_suggestions(video_props, user_input)
+                
+    except Exception as e:
+        st.error(f"❌ AI分析失败: {str(e)}")
+        st.info("💡 将使用默认建议作为备选方案")
+        return get_fallback_suggestions(video_props, user_input)
+
+def validate_suggestion(suggestion, video_props):
+    """验证AI建议的有效性"""
+    try:
+        # 检查必需字段
+        required_fields = ['name', 'description', 'params', 'size_constraint']
+        if not all(field in suggestion for field in required_fields):
+            return False
+        
+        params = suggestion['params']
+        required_params = ['fps', 'quality', 'width', 'height', 'optimize']
+        if not all(param in params for param in required_params):
+            return False
+        
+        # 验证参数范围
+        if not (1 <= params['fps'] <= 30):
+            return False
+        if not (50 <= params['quality'] <= 100):
+            return False
+        if not (10 <= params['width'] <= video_props['width'] * 2):
+            return False
+        if not (10 <= params['height'] <= video_props['height'] * 2):
+            return False
+        
+        # 验证尺寸约束
+        constraint = suggestion['size_constraint']
+        required_constraint_fields = ['operator', 'value', 'unit', 'enabled']
+        if not all(field in constraint for field in required_constraint_fields):
+            return False
+        
+        if constraint['operator'] not in ['<', '>', '=', '<=', '>=']:
+            return False
+        if constraint['unit'] not in ['B', 'KB', 'MB', 'GB']:
+            return False
+        if not isinstance(constraint['value'], (int, float)) or constraint['value'] <= 0:
+            return False
+        
+        return True
+        
+    except Exception:
+        return False
+
+def get_fallback_suggestions(video_props, user_input=""):
+    """获取备选建议（当AI失败时使用）"""
     fps = video_props['fps']
-    duration = video_props['duration']
-    file_size = video_props['file_size']
     width = video_props['width']
     height = video_props['height']
+    duration = video_props['duration']
+    file_size = video_props['file_size']
     
-    # 分析用户输入 - 智能意图识别
-    user_input_lower = user_input.lower()
+    suggestions = []
     
-    # 意图分析：检测用户是否明确要求压缩
-    explicit_compression_keywords = ["压缩", "小文件", "快速", "减小", "缩小", "节省空间", "网络分享", "上传限制"]
-    has_explicit_compression = any(keyword in user_input_lower for keyword in explicit_compression_keywords)
+    # 高质量版本
+    suggestions.append({
+        'name': '高质量专业版',
+        'description': '保持最高视觉质量，适合专业展示和演示用途',
+        'params': {
+            'fps': min(int(fps), 15),
+            'quality': 95,
+            'width': width,
+            'height': height,
+            'optimize': True
+        },
+        'size_constraint': {
+            'operator': '<',
+            'value': 10.0,
+            'unit': 'MB',
+            'enabled': True
+        }
+    })
     
-    # 意图分析：检测用户是否要求高质量
-    quality_keywords = ["高清", "高质量", "原版", "最佳质量", "最高质量", "无损", "专业"]
-    has_quality_demand = any(keyword in user_input_lower for keyword in quality_keywords)
+    # 平衡版本
+    suggestions.append({
+        'name': '平衡优化版',
+        'description': '质量与文件大小的最佳平衡，适合一般分享使用',
+        'params': {
+            'fps': min(int(fps), 12),
+            'quality': 85,
+            'width': min(width, 640),
+            'height': min(height, 480),
+            'optimize': True
+        },
+        'size_constraint': {
+            'operator': '<',
+            'value': 5.0,
+            'unit': 'MB',
+            'enabled': True
+        }
+    })
     
-    # 意图分析：检测特定使用场景
-    wechat_keywords = ["微信", "表情包", "动图", "表情", "聊天", "社交"]
-    is_wechat_usage = any(keyword in user_input_lower for keyword in wechat_keywords)
-    
-    email_keywords = ["邮件", "email", "附件", "发送"]
-    is_email_usage = any(keyword in user_input_lower for keyword in email_keywords)
-    
-    web_keywords = ["网页", "网站", "博客", "论坛", "在线"]
-    is_web_usage = any(keyword in user_input_lower for keyword in web_keywords)
-    
-    # 智能推荐逻辑
-    if has_quality_demand or (not has_explicit_compression and not is_wechat_usage and not is_email_usage and not is_web_usage):
-        # 用户要求高质量或没有明确压缩需求时，优先推荐最高质量
+    # 压缩版本
+    if duration > 10 or file_size > 20 * 1024 * 1024:
         suggestions.append({
-            'name': '高清优化版',
-            'description': '保持原视频质量，优化色彩和细节，适合专业用途和高质量需求',
-            'params': {
-                'fps': min(fps, 15),
-                'quality': 95,
-                'width': width,
-                'height': height,
-                'optimize': True
-            },
-            'size_constraint': {
-                'operator': '<',
-                'value': 10.0,
-                'unit': 'MB',
-                'enabled': True
-            }
-        })
-    
-    if is_wechat_usage:
-        # 微信表情包专用优化
-        suggestions.append({
-            'name': '微信表情包版',
-            'description': '专为微信动图表情包优化，文件大小控制在20MB以内，保持良好视觉效果',
-            'params': {
-                'fps': min(fps, 12),
-                'quality': 85,
-                'width': min(width, 320),
-                'height': min(height, 240),
-                'optimize': True
-            },
-            'size_constraint': {
-                'operator': '<',
-                'value': 20.0,
-                'unit': 'MB',
-                'enabled': True
-            }
-        })
-    
-    if is_email_usage:
-        # 邮件附件优化
-        suggestions.append({
-            'name': '邮件附件版',
-            'description': '适合邮件发送的优化版本，文件大小控制在5MB以内',
-            'params': {
-                'fps': min(fps, 10),
-                'quality': 80,
-                'width': min(width, 480),
-                'height': min(height, 360),
-                'optimize': True
-            },
-            'size_constraint': {
-                'operator': '<',
-                'value': 5.0,
-                'unit': 'MB',
-                'enabled': True
-            }
-        })
-    
-    if is_web_usage:
-        # 网页使用优化
-        suggestions.append({
-            'name': '网页优化版',
-            'description': '适合网页展示的优化版本，快速加载，文件大小控制在2MB以内',
-            'params': {
-                'fps': min(fps, 8),
-                'quality': 75,
-                'width': min(width, 400),
-                'height': min(height, 300),
-                'optimize': True
-            },
-            'size_constraint': {
-                'operator': '<',
-                'value': 2.0,
-                'unit': 'MB',
-                'enabled': True
-            }
-        })
-    
-    if has_explicit_compression:
-        # 用户明确要求压缩
-        suggestions.append({
-            'name': '压缩优化版',
-            'description': '大幅压缩文件大小，适合网络分享和存储空间有限的情况',
+            'name': '小文件分享版',
+            'description': '大幅压缩文件大小，适合网络传输和存储空间有限的场景',
             'params': {
                 'fps': 8,
-                'quality': 70,
+                'quality': 75,
                 'width': min(width, 480),
                 'height': min(height, 360),
                 'optimize': True
@@ -329,66 +472,6 @@ def generate_ai_suggestions(video_props, user_input=""):
             'size_constraint': {
                 'operator': '<',
                 'value': 2.0,
-                'unit': 'MB',
-                'enabled': True
-            }
-        })
-    
-    # 基于视频特征的智能建议（仅在用户没有明确需求时提供）
-    if not user_input or (not has_explicit_compression and not has_quality_demand and not is_wechat_usage and not is_email_usage and not is_web_usage):
-        if duration > 30:  # 长视频
-            suggestions.append({
-                'name': '长视频优化版',
-                'description': '针对长视频的特殊优化，平衡质量和文件大小',
-                'params': {
-                    'fps': 8,
-                    'quality': 80,
-                    'width': min(width, 720),
-                    'height': min(height, 540),
-                    'optimize': True
-                },
-                'size_constraint': {
-                    'operator': '<',
-                    'value': 8.0,
-                    'unit': 'MB',
-                    'enabled': True
-                }
-            })
-        
-        if file_size > 50 * 1024 * 1024:  # 大文件
-            suggestions.append({
-                'name': '大文件优化版',
-                'description': '针对大文件的智能压缩，保持可接受的视觉效果',
-                'params': {
-                    'fps': 10,
-                    'quality': 75,
-                    'width': min(width, 480),
-                    'height': min(height, 360),
-                    'optimize': True
-                },
-                'size_constraint': {
-                    'operator': '<',
-                    'value': 3.0,
-                    'unit': 'MB',
-                    'enabled': True
-                }
-            })
-    
-    # 如果没有生成任何建议，提供默认的平衡版本
-    if not suggestions:
-        suggestions.append({
-            'name': '平衡优化版',
-            'description': '质量与大小的最佳平衡，适合一般用途',
-            'params': {
-                'fps': min(fps, 12),
-                'quality': 85,
-                'width': min(width, 640),
-                'height': min(height, 480),
-                'optimize': True
-            },
-            'size_constraint': {
-                'operator': '<',
-                'value': 5.0,
                 'unit': 'MB',
                 'enabled': True
             }
@@ -779,6 +862,61 @@ def cleanup_temp_files():
     except Exception as e:
         pass
 
+def setup_api_key():
+    """设置API密钥"""
+    with st.expander("🔑 API密钥设置", expanded=not check_api_key()):
+        # 如果已经有API密钥，显示当前状态
+        if check_api_key():
+            st.success("✅ API密钥已设置，可以使用AI智能建议功能")
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("🗑️ 清除密钥", use_container_width=True):
+                    # 清除密钥
+                    st.session_state["api_key"] = None
+                    if "api_key_persistent" in st.session_state:
+                        del st.session_state.api_key_persistent
+                    st.success("✅ API密钥已清除")
+                    st.rerun()
+            with col2:
+                st.write("")  # 占位符
+        else:
+            st.markdown("请输入您的API密钥以使用AI智能建议功能：")
+            
+            # API密钥输入区域
+            api_key = st.text_input(
+                "API密钥",
+                type="password",
+                placeholder="请输入您的API密钥...",
+                help="请输入您的API密钥以启用AI智能建议功能",
+                key="api_key_input"
+            )
+            
+            # 设置按钮
+            if st.button("✅ 设置密钥", use_container_width=True):
+                if api_key:
+                    # 保存密钥
+                    st.session_state.api_key_persistent = api_key
+                    st.session_state["api_key"] = api_key
+                    st.success("✅ API密钥设置成功！")
+                    st.rerun()
+                else:
+                    st.error("❌ 请输入有效的API密钥")
+            
+            # 不显眼的建议
+            st.markdown("""
+            <div style="
+                background: rgba(128, 128, 128, 0.1);
+                border-radius: 8px;
+                padding: 0.5rem;
+                margin-top: 0.5rem;
+                font-size: 0.8rem;
+                color: rgba(200, 200, 200, 0.8);
+                border-left: 3px solid rgba(169, 169, 169, 0.5);
+            ">
+                💡 <strong>提示</strong>: 没有API密钥也可以使用手动参数调整功能，但无法使用AI智能建议。
+            </div>
+            """, unsafe_allow_html=True)
+
 def main():
     """主函数"""
     # 初始化会话状态
@@ -788,15 +926,21 @@ def main():
     st.markdown("""
     <div class="main-header">
         <h1>🎬 视频转GIF工具</h1>
-        <p>智能视频转换，保持最佳质量 • 支持多种格式 • 自动优化</p>
+        <p>智能视频转换，保持最佳质量 • 支持多种格式 • AI智能建议</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # API密钥设置区域
+    setup_api_key()
     
     # 添加一些空间
     st.markdown("<br>", unsafe_allow_html=True)
     
     # 添加一些说明
-    st.info("💡 欢迎使用视频转GIF工具！上传视频后系统将自动分析并设置最优参数，支持多种视频格式转换")
+    if check_api_key():
+        st.info("💡 欢迎使用视频转GIF工具！上传视频后AI将自动分析并生成智能建议，也可手动调整参数")
+    else:
+        st.info("💡 欢迎使用视频转GIF工具！上传视频后可手动调整参数，设置API密钥后可使用AI智能建议功能")
     
     # 检查OpenCV是否可用
     if not OPENCV_AVAILABLE:
