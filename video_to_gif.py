@@ -894,14 +894,12 @@ def get_real_gif_size_preview(video_path, params):
         # 首先验证视频文件
         is_valid, message = validate_video_file(video_path)
         if not is_valid:
-            st.warning(f"⚠️ 预估时视频验证失败: {message}")
             return None
         
         # 安全地打开视频文件
         try:
             cap = cv2.VideoCapture(video_path)
         except Exception as e:
-            st.warning(f"⚠️ 无法打开视频文件进行预估: {str(e)}")
             return None
             
         if not cap.isOpened():
@@ -921,7 +919,6 @@ def get_real_gif_size_preview(video_path, params):
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         except Exception as e:
             cap.release()
-            st.warning(f"⚠️ 获取视频属性失败: {str(e)}")
             return None
         
         # 验证获取的属性
@@ -1012,7 +1009,6 @@ def get_real_gif_size_preview(video_path, params):
         
         # 检查是否成功处理了足够的帧
         if not frames or len(frames) < 2:
-            st.warning("⚠️ 预估时无法读取足够的视频帧，使用估算大小")
             return None
         
         # 安全地创建GIF
@@ -1042,14 +1038,12 @@ def get_real_gif_size_preview(video_path, params):
                 return None
             
         except Exception as gif_e:
-            st.warning(f"⚠️ 创建预估GIF时出错: {str(gif_e)}")
             return None
         
     except Exception as e:
         # 捕获所有未预期的异常
         if cap:
             cap.release()
-        st.warning(f"⚠️ 预估过程中出现异常: {str(e)}")
         return None
 
 def get_fallback_estimate_size(video_props, params):
@@ -1122,19 +1116,35 @@ def estimate_gif_size(video_props, params, video_path=None):
             if is_valid:
                 estimated_size = get_real_gif_size_preview(video_path, params)
         except Exception as e:
-            st.warning(f"⚠️ 真实预估过程中出现异常: {str(e)}")
             estimated_size = None
     
-    # 如果真实转换失败，使用备用估算
+    # 如果真实转换失败，重试或使用保守估计
     if estimated_size is None or estimated_size <= 0:
-        try:
-            estimated_size = get_fallback_estimate_size(video_props, params)
-            st.info("📊 使用数学模型估算文件大小（实际大小可能有差异）")
-        except Exception as e:
-            # 如果备用估算也失败，使用最保守的估计
-            file_size = video_props.get('file_size', 10 * 1024 * 1024)
-            estimated_size = max(1024, file_size // 4)  # 最少1KB
-            st.warning("⚠️ 无法精确预估文件大小，使用保守估计")
+        # 再次尝试真实转换预估，使用更宽松的参数
+        if video_path and os.path.exists(video_path):
+            try:
+                # 使用简化参数重试
+                simplified_params = params.copy()
+                simplified_params['width'] = min(simplified_params.get('width', 320), 320)
+                simplified_params['height'] = min(simplified_params.get('height', 240), 240)
+                simplified_params['fps'] = min(simplified_params.get('fps', 5), 5)
+                
+                estimated_size = get_real_gif_size_preview(video_path, simplified_params)
+                if estimated_size and estimated_size > 0:
+                    # 根据原始参数调整估算大小
+                    scale_factor = (params.get('width', 320) * params.get('height', 240)) / (simplified_params['width'] * simplified_params['height'])
+                    fps_factor = params.get('fps', 10) / simplified_params['fps']
+                    quality_factor = params.get('quality', 85) / 85
+                    
+                    estimated_size = int(estimated_size * scale_factor * fps_factor * quality_factor)
+            except Exception:
+                estimated_size = None
+        
+        # 如果仍然失败，使用基于视频文件大小的保守估计
+        if estimated_size is None or estimated_size <= 0:
+            file_size = video_props.get('file_size', 5 * 1024 * 1024)
+            # 基于视频文件大小的简单估算：通常GIF是视频大小的1/3到1/2
+            estimated_size = max(10 * 1024, file_size // 3)  # 最少10KB
     
     # 验证估算结果的合理性
     if estimated_size is None or estimated_size <= 0:
