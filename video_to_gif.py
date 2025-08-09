@@ -169,7 +169,8 @@ def init_session_state():
             'operator': '<',
             'value': 5.0,
             'unit': 'MB',
-            'enabled': False
+            'enabled': False,
+            'target_size': 5.0 * 1024 * 1024  # 5MB in bytes
         }
     if 'ai_suggestions' not in st.session_state:
         st.session_state.ai_suggestions = []
@@ -358,10 +359,23 @@ def generate_ai_suggestions(video_props, user_input=""):
                         if validate_suggestion(suggestion, video_props):
                             # 进一步验证参数是否能满足大小约束
                             if 'size_constraint' in suggestion and suggestion['size_constraint'].get('enabled', False):
+                                # 确保size_constraint包含target_size字段
+                                constraint = suggestion['size_constraint']
+                                if 'target_size' not in constraint:
+                                    # 计算target_size
+                                    unit_multipliers = {
+                                        'B': 1,
+                                        'KB': 1024,
+                                        'MB': 1024 * 1024,
+                                        'GB': 1024 * 1024 * 1024
+                                    }
+                                    multiplier = unit_multipliers.get(constraint.get('unit', 'MB').upper(), 1024 * 1024)
+                                    constraint['target_size'] = constraint.get('value', 5.0) * multiplier
+                                
                                 adjusted_params = adjust_params_for_constraint(
                                     video_props, 
                                     suggestion['params'], 
-                                    suggestion['size_constraint']
+                                    constraint
                                 )
                                 
                                 # 更新建议的参数为调整后的参数
@@ -371,15 +385,15 @@ def generate_ai_suggestions(video_props, user_input=""):
                                 satisfied, estimated_size = validate_params_against_constraint(
                                     video_props, 
                                     adjusted_params, 
-                                    suggestion['size_constraint']
+                                    constraint
                                 )
                                 
                                 # 如果仍然不满足，调整约束
                                 if not satisfied and estimated_size:
                                     new_target_size = estimated_size * 1.3  # 留30%余量
                                     new_target_mb = new_target_size / (1024 * 1024)
-                                    suggestion['size_constraint']['value'] = round(new_target_mb, 1)
-                                    suggestion['size_constraint']['target_size'] = new_target_size
+                                    constraint['value'] = round(new_target_mb, 1)
+                                    constraint['target_size'] = new_target_size
                                     
                                     # 更新描述
                                     if "（预估" not in suggestion['description']:
@@ -550,8 +564,111 @@ def get_fallback_suggestions(video_props, user_input=""):
     
     return suggestions
 
-def estimate_gif_size(video_props, params):
-    """预估GIF文件大小"""
+def get_real_gif_size_preview(video_path, params, max_preview_frames=20):
+    """通过真实转换获得准确的GIF文件大小预估"""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+        
+        frames = []
+        fps = params['fps']
+        target_width = params['width']
+        target_height = params['height']
+        quality = params['quality']
+        
+        # 计算采样间隔
+        original_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        if original_fps > 0:
+            sample_interval = max(1, int(original_fps / fps))
+        else:
+            sample_interval = 1
+        
+        # 限制预览帧数以提高速度，但保持比例
+        max_frames_for_preview = min(max_preview_frames, total_frames // sample_interval)
+        if max_frames_for_preview <= 0:
+            max_frames_for_preview = min(5, total_frames)
+        
+        # 计算跳帧间隔（均匀采样）
+        frame_skip = max(1, (total_frames // sample_interval) // max_frames_for_preview)
+        
+        frame_count = 0
+        processed_frames = 0
+        
+        while processed_frames < max_frames_for_preview:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # 按间隔和跳帧采样
+            if frame_count % (sample_interval * frame_skip) == 0:
+                try:
+                    # 调整尺寸
+                    if target_width and target_height:
+                        frame = cv2.resize(frame, (target_width, target_height))
+                    
+                    # BGR转RGB
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # 转换为PIL图像
+                    pil_image = Image.fromarray(frame_rgb)
+                    frames.append(pil_image)
+                    processed_frames += 1
+                    
+                except Exception as e:
+                    continue
+            
+            frame_count += 1
+        
+        cap.release()
+        
+        if not frames:
+            return None
+        
+        # 创建预览GIF
+        gif_buffer = io.BytesIO()
+        frames[0].save(
+            gif_buffer,
+            format='GIF',
+            save_all=True,
+            append_images=frames[1:],
+            duration=int(1000 / fps),  # 毫秒
+            loop=0,
+            optimize=params['optimize'],
+            quality=quality
+        )
+        
+        gif_buffer.seek(0)
+        preview_gif_data = gif_buffer.getvalue()
+        preview_size = len(preview_gif_data)
+        
+        # 根据预览帧数和实际帧数计算完整文件大小
+        actual_frames = min(200, int((total_frames // sample_interval)))
+        size_per_frame = preview_size / max(1, len(frames))
+        
+        # 估算完整文件大小
+        estimated_full_size = size_per_frame * actual_frames
+        
+        # 添加一些开销修正
+        overhead_factor = 1.1  # 10%的开销
+        estimated_full_size *= overhead_factor
+        
+        return int(estimated_full_size)
+        
+    except Exception as e:
+        return None
+
+def estimate_gif_size(video_props, params, video_path=None):
+    """预估GIF文件大小 - 优先使用真实转换，回退到经验公式"""
+    # 如果有视频路径，尝试真实转换预估
+    if video_path and os.path.exists(video_path):
+        real_size = get_real_gif_size_preview(video_path, params)
+        if real_size is not None:
+            return real_size
+    
+    # 回退到经验公式预估
     try:
         # 基础计算参数
         width = params.get('width', video_props['width'])
@@ -604,12 +721,12 @@ def estimate_gif_size(video_props, params):
         # 如果预估失败，返回一个保守估计
         return video_props['file_size'] // 4
 
-def validate_params_against_constraint(video_props, params, size_constraint):
+def validate_params_against_constraint(video_props, params, size_constraint, video_path=None):
     """验证参数是否能满足大小约束"""
     if not size_constraint or not size_constraint.get('enabled'):
         return True, None
     
-    estimated_size = estimate_gif_size(video_props, params)
+    estimated_size = estimate_gif_size(video_props, params, video_path)
     target_size = size_constraint['target_size']
     operator = size_constraint['operator']
     
@@ -629,7 +746,7 @@ def validate_params_against_constraint(video_props, params, size_constraint):
     
     return satisfied, estimated_size
 
-def adjust_params_for_constraint(video_props, base_params, size_constraint):
+def adjust_params_for_constraint(video_props, base_params, size_constraint, video_path=None):
     """根据大小约束调整参数"""
     if not size_constraint or not size_constraint.get('enabled'):
         return base_params
@@ -645,7 +762,7 @@ def adjust_params_for_constraint(video_props, base_params, size_constraint):
     adjusted_params = base_params.copy()
     
     # 预估当前参数的文件大小
-    current_estimated = estimate_gif_size(video_props, adjusted_params)
+    current_estimated = estimate_gif_size(video_props, adjusted_params, video_path)
     
     if current_estimated <= target_size:
         return adjusted_params
@@ -1332,7 +1449,10 @@ def main():
         
         # 显示当前参数的预估文件大小
         if video_info:
-            estimated_size = estimate_gif_size(video_info, st.session_state.conversion_params)
+            # 获取当前视频文件路径
+            current_video_path = st.session_state.get('video_file')
+            
+            estimated_size = estimate_gif_size(video_info, st.session_state.conversion_params, current_video_path)
             estimated_mb = estimated_size / (1024 * 1024)
             estimated_kb = estimated_size / 1024
             
@@ -1345,17 +1465,39 @@ def main():
             
             # 如果有大小约束，检查是否满足
             if st.session_state.size_constraint.get('enabled', False):
-                constraint = st.session_state.size_constraint
-                satisfied, _ = validate_params_against_constraint(
+                constraint = st.session_state.size_constraint.copy()
+                
+                # 确保约束包含target_size字段
+                if 'target_size' not in constraint:
+                    unit_multipliers = {
+                        'B': 1,
+                        'KB': 1024,
+                        'MB': 1024 * 1024,
+                        'GB': 1024 * 1024 * 1024
+                    }
+                    multiplier = unit_multipliers.get(constraint.get('unit', 'MB').upper(), 1024 * 1024)
+                    constraint['target_size'] = constraint.get('value', 5.0) * multiplier
+                
+                satisfied, estimated_size_with_constraint = validate_params_against_constraint(
                     video_info, 
                     st.session_state.conversion_params, 
-                    constraint
+                    constraint,
+                    current_video_path
                 )
                 
-                if satisfied:
-                    st.success(f"✅ 当前参数满足大小约束要求")
+                # 显示约束信息
+                target_size_mb = constraint['target_size'] / (1024 * 1024)
+                target_size_kb = constraint['target_size'] / 1024
+                
+                if target_size_mb >= 1:
+                    target_display = f"{target_size_mb:.1f}MB"
                 else:
-                    st.warning(f"⚠️ 当前参数可能无法满足大小约束，建议调整参数或使用AI智能建议")
+                    target_display = f"{target_size_kb:.0f}KB"
+                
+                if satisfied:
+                    st.success(f"✅ 当前参数满足大小约束要求（{constraint['operator']} {target_display}）")
+                else:
+                    st.warning(f"⚠️ 当前参数可能无法满足大小约束（{constraint['operator']} {target_display}），建议调整参数或使用AI智能建议")
                     st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
         
         # 文件大小约束设置
