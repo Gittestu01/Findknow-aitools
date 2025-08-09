@@ -610,9 +610,17 @@ def get_real_gif_size_preview(video_path, params):
         original_fps = cap.get(cv2.CAP_PROP_FPS)
         sample_interval = max(1, int(original_fps / fps)) if original_fps > 0 else 1
         
-        # 限制最大帧数以提高速度 - 预估时使用更少帧数
+        # 限制最大帧数以提高速度 - 预估时使用较少帧数但保持准确性
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        max_frames = min(50, total_frames // sample_interval)  # 预估时减少帧数提高速度
+        actual_output_frames = min(150, total_frames // sample_interval)  # 实际转换时的帧数
+        
+        # 预估时使用较少帧数，但根据视频长度动态调整
+        if actual_output_frames <= 50:
+            preview_frames = actual_output_frames  # 短视频直接用全部帧
+        elif actual_output_frames <= 100:
+            preview_frames = 25  # 中等长度视频使用25帧
+        else:
+            preview_frames = 20  # 长视频使用20帧
         
         # 预分配帧数组
         frames = []
@@ -622,13 +630,23 @@ def get_real_gif_size_preview(video_path, params):
         # 预设置resize插值方法
         resize_interpolation = cv2.INTER_LINEAR
         
-        while processed_frames < max_frames:
+        # 计算均匀采样间隔 - 确保采样帧均匀分布在整个视频中
+        if preview_frames < actual_output_frames:
+            # 计算预估时的额外跳跃间隔，确保采样帧分布在整个视频范围内
+            preview_sample_step = max(1, actual_output_frames // preview_frames)
+        else:
+            preview_sample_step = 1
+        
+        preview_sample_count = 0
+        
+        while processed_frames < preview_frames:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            # 按间隔采样
-            if frame_count % sample_interval == 0:
+            # 按间隔采样，并且均匀分布采样
+            if (frame_count % sample_interval == 0 and 
+                preview_sample_count % preview_sample_step == 0):
                 try:
                     # 批量处理：调整尺寸和颜色转换
                     if target_width and target_height:
@@ -643,6 +661,10 @@ def get_real_gif_size_preview(video_path, params):
                         
                 except Exception:
                     continue
+                
+                preview_sample_count += 1
+            elif frame_count % sample_interval == 0:
+                preview_sample_count += 1
             
             frame_count += 1
         
@@ -670,8 +692,14 @@ def get_real_gif_size_preview(video_path, params):
         gif_data = gif_buffer.getvalue()
         
         # 基于采样帧数调整预估大小
-        size_multiplier = min(150, total_frames // sample_interval) / max_frames
-        estimated_size = len(gif_data) * size_multiplier
+        preview_frames_count = len(frames)  # 实际处理的预览帧数
+        
+        if preview_frames_count > 0:
+            # 计算更准确的大小比例：实际输出帧数 / 预览帧数
+            size_multiplier = actual_output_frames / preview_frames_count
+            estimated_size = len(gif_data) * size_multiplier
+        else:
+            estimated_size = len(gif_data)
         
         return int(estimated_size)
         
@@ -679,7 +707,7 @@ def get_real_gif_size_preview(video_path, params):
         return None
 
 def estimate_gif_size(video_props, params, video_path=None):
-    """预估GIF文件大小 - 优化版本，智能选择预估方式"""
+    """预估GIF文件大小 - 使用真实转换获得准确预估"""
     
     # 生成参数缓存键
     params_key = f"{params.get('width', 0)}x{params.get('height', 0)}_{params.get('fps', 10)}fps_{params.get('quality', 85)}q"
@@ -692,68 +720,14 @@ def estimate_gif_size(video_props, params, video_path=None):
     if params_key in st.session_state.size_estimate_cache:
         return st.session_state.size_estimate_cache[params_key]
     
-    # 只在必要时使用真实转换（文件大小较小且参数合理时）
-    should_use_real_conversion = (
-        video_path and os.path.exists(video_path) and 
-        video_props.get('file_size', 0) < 50 * 1024 * 1024 and  # 小于50MB
-        video_props.get('duration', 0) < 30 and  # 短于30秒
-        params.get('width', 1920) * params.get('height', 1080) < 1920 * 1080  # 分辨率不太高
-    )
-    
+    # 始终使用真实转换进行预估
     estimated_size = None
-    
-    if should_use_real_conversion:
+    if video_path and os.path.exists(video_path):
         estimated_size = get_real_gif_size_preview(video_path, params)
     
-    # 如果真实转换失败或不适用，使用优化的经验公式
+    # 如果真实转换失败，返回保守估计
     if estimated_size is None:
-        try:
-            # 基础计算参数
-            width = params.get('width', video_props['width'])
-            height = params.get('height', video_props['height'])
-            fps = params.get('fps', 10)
-            quality = params.get('quality', 85)
-            duration = video_props['duration']
-            
-            # 计算预估帧数
-            estimated_frames = min(200, int(duration * fps))
-            
-            # 基于经验公式预估文件大小
-            pixels_per_frame = width * height
-            
-            # 基础字节数估算（考虑GIF压缩特性）
-            base_bytes_per_pixel = 0.5
-            
-            # 质量影响因子
-            quality_factor = quality / 100.0
-            
-            # 复杂度因子（基于分辨率）
-            complexity_factor = min(2.0, (pixels_per_frame / (320 * 240)) ** 0.5)
-            
-            # 帧数影响（更多帧数会有更好的压缩）
-            frame_compression_factor = max(0.7, 1.0 - (estimated_frames / 1000.0))
-            
-            # 计算预估大小
-            estimated_size = int(
-                pixels_per_frame * 
-                estimated_frames * 
-                base_bytes_per_pixel * 
-                quality_factor * 
-                complexity_factor * 
-                frame_compression_factor
-            )
-            
-            # 添加GIF头部和元数据开销
-            overhead = 1024 + (estimated_frames * 50)
-            estimated_size += overhead
-            
-            # 考虑优化选项
-            if params.get('optimize', True):
-                estimated_size = int(estimated_size * 0.85)
-                
-        except Exception:
-            # 如果预估失败，返回一个保守估计
-            estimated_size = video_props['file_size'] // 4
+        estimated_size = video_props.get('file_size', 10 * 1024 * 1024) // 4  # 使用原文件大小的1/4作为备用估计
     
     # 缓存结果
     st.session_state.size_estimate_cache[params_key] = estimated_size
@@ -1562,7 +1536,7 @@ def main():
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # 显示当前参数的实际转换文件大小（基于最终约束调整后的参数）
+        # 显示当前参数的预估文件大小（基于最终约束调整后的参数）
         if video_info:
             # 获取当前视频文件路径
             current_video_path = st.session_state.get('video_file')
@@ -1654,7 +1628,7 @@ def main():
             else:
                 size_display = f"{estimated_kb:.0f}KB"
             
-            st.info(f"📊 当前参数实际转换文件大小: {size_display}")
+            st.info(f"📊 当前文件转后的预估大小为: {size_display}")
             
             # 始终显示调整提示
             st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
@@ -1664,7 +1638,7 @@ def main():
                 if satisfied:
                     st.success(f"✅ 当前参数满足大小约束要求（{constraint['operator']} {target_display}）")
                 else:
-                    st.info(f"📊 当前参数实际大小约为 {size_display}，约束要求 {constraint['operator']} {target_display}")
+                    st.info(f"📊 当前参数预估大小约为 {size_display}，约束要求 {constraint['operator']} {target_display}")
         
         # 转换按钮
         st.markdown("---")
