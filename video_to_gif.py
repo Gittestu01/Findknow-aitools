@@ -135,7 +135,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def get_ai_client():
-    """获取AI客户端"""
+    """获取AI客户端 - 优化超时配置"""
     api_key = st.session_state.get("api_key") or st.session_state.get("api_key_persistent")
     if not api_key:
         return None
@@ -143,7 +143,9 @@ def get_ai_client():
     try:
         client = OpenAI(
             api_key=api_key,
-            base_url=AI_CONFIG["base_url"]
+            base_url=AI_CONFIG["base_url"],
+            timeout=30.0,  # 设置30秒超时
+            max_retries=2   # 设置最大重试次数
         )
         return client
     except Exception as e:
@@ -268,100 +270,97 @@ def generate_ai_suggestions(video_props, user_input=""):
         return []
     
     try:
-        # 构建专业的系统提示词
-        system_prompt = """你是一位专业的视频转GIF优化专家，具备深厚的多媒体技术知识和用户体验设计经验。
+        # 构建优化的系统提示词（缩短长度以加快响应）
+        system_prompt = """你是视频转GIF优化专家。
 
-核心职责：
-1. 分析用户的自然语言需求，准确识别使用场景和质量期望
-2. 结合视频技术参数，提供专业的转换参数建议
-3. 平衡文件大小、视觉质量和加载速度的关系
-4. 针对不同应用场景提供最优解决方案
-5. 确保建议的参数组合能够实际达到约束的文件大小要求
+任务：分析视频参数和用户需求，提供2-3个GIF转换方案。
 
-技术专业知识：
-- GIF格式特性：调色板限制、循环播放、逐帧压缩
-- 关键参数影响：帧率影响流畅度、质量影响色彩保真度、分辨率影响清晰度
-- 压缩策略：关键帧采样、色彩量化、尺寸缩放的综合运用
-- 应用场景优化：社交媒体、网页展示、邮件附件等不同需求
-- 文件大小预估：基于分辨率、帧率、质量的实际文件大小估算
+核心原则：
+1. 平衡文件大小、质量和流畅度
+2. 高分辨率视频需适当缩放
+3. 长视频使用保守参数
+4. 文件大小约束必须可实现
 
-重要原则：
-- 建议的文件大小约束必须是可实现的，不能设置过于严格的限制
-- 当原视频分辨率很高时，必须适当降低目标分辨率以控制文件大小
-- 长时间视频需要更保守的参数设置
-- 优先保证参数组合的可行性，而不是追求极限参数
-
-回复格式要求：
-返回一个JSON数组，包含2-4个建议方案。每个方案必须包含：
-- name: 方案名称（简洁有力，体现特色）
-- description: 详细说明（说明适用场景和优势，如果可能请包含预估文件大小）
-- params: 技术参数
-  - fps: 帧率 (1-30)
-  - quality: 质量百分比 (50-100)
-  - width: 目标宽度
-  - height: 目标高度  
-  - optimize: 是否启用优化 (true/false)
-- size_constraint: 文件大小约束
-  - operator: 比较符 ("<", ">", "=", "<=", ">=")
-  - value: 数值
-  - unit: 单位 ("B", "KB", "MB", "GB")
-  - enabled: 是否启用 (true/false)
-
-示例：
-[
-  {
-    "name": "高质量专业版",
-    "description": "保持最高视觉质量，适合专业展示和高质量要求场景（预估8-12MB）",
-    "params": {
-      "fps": 12,
-      "quality": 90,
-      "width": 1080,
-      "height": 608,
-      "optimize": true
-    },
-    "size_constraint": {
-      "operator": "<",
-      "value": 15.0,
-      "unit": "MB",
-      "enabled": true
-    }
+返回JSON数组格式：
+[{
+  "name": "方案名称",
+  "description": "详细说明和适用场景（含预估大小）",
+  "params": {
+    "fps": 1-30,
+    "quality": 50-100,
+    "width": 目标宽度,
+    "height": 目标高度,
+    "optimize": true/false
+  },
+  "size_constraint": {
+    "operator": "<",
+    "value": 数值,
+    "unit": "MB",
+    "enabled": true
   }
-]
+}]
 
-注意事项：
-- 必须返回有效的JSON格式
-- 参数值必须在合理范围内
-- 建议方案要有明显区别和针对性
-- 文件大小约束要现实可行，留有余量
-- 高分辨率视频必须适当缩放以控制文件大小
-- 长视频（>30秒）需要更保守的参数设置"""
+要求：
+- 必须返回有效JSON
+- 方案要有明显区别
+- 约束要现实可行"""
 
-        # 构建用户查询
-        user_prompt = f"""请为以下视频转GIF需求提供专业建议：
+        # 构建用户查询（简化以加快响应）
+        user_prompt = f"""视频参数：
+分辨率：{video_props['width']}×{video_props['height']}
+帧率：{video_props['fps']:.1f}FPS，时长：{video_props['duration']:.1f}秒
+文件大小：{video_props['file_size'] / (1024*1024):.2f}MB
 
-视频技术参数：
-- 原始分辨率：{video_props['width']}×{video_props['height']}
-- 原始帧率：{video_props['fps']:.1f} FPS
-- 视频时长：{video_props['duration']:.1f}秒
-- 文件大小：{video_props['file_size'] / (1024*1024):.2f}MB
-- 总帧数：{video_props['frame_count']}帧
+用户需求：{user_input if user_input.strip() else "通用优化建议"}
 
-用户需求描述：
-{user_input if user_input.strip() else "用户未提供具体需求，请提供通用的优化建议"}
+请提供2-3个GIF转换方案（JSON格式）。"""
 
-请基于以上信息，提供2-4个专业的GIF转换方案建议。每个方案要有明确的定位和适用场景。"""
-
-        # 调用AI进行分析
+        # 调用AI进行分析 - 添加超时和重试机制
         with st.spinner("🤖 AI正在分析视频参数和用户需求..."):
-            completion = client.chat.completions.create(
-                model=AI_CONFIG["model"],
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000
-            )
+            max_retries = 3
+            timeout_seconds = 30
+            
+            for attempt in range(max_retries):
+                try:
+                    # 设置较短的超时时间和优化的参数
+                    completion = client.chat.completions.create(
+                        model=AI_CONFIG["model"],
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=1500,  # 减少token数量以加快响应
+                        timeout=timeout_seconds
+                    )
+                    break  # 成功则跳出重试循环
+                    
+                except Exception as retry_error:
+                    if attempt < max_retries - 1:
+                        st.info(f"⏳ 网络请求超时，正在重试... ({attempt + 1}/{max_retries})")
+                        # 增加重试延迟，避免立即重试
+                        import time
+                        time.sleep(1)
+                        continue
+                    else:
+                        # 最后一次重试失败，提供详细的错误信息和解决建议
+                        error_msg = str(retry_error)
+                        if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+                            st.warning("⚠️ AI服务响应超时")
+                            st.info("💡 可能的解决方案：\n- 检查网络连接\n- 稍后重试\n- 使用下方的智能默认建议")
+                        elif "connection" in error_msg.lower():
+                            st.warning("⚠️ 网络连接失败")
+                            st.info("💡 请检查网络连接后重试，现在将使用智能默认建议")
+                        elif "unauthorized" in error_msg.lower() or "401" in error_msg:
+                            st.error("❌ API密钥无效或已过期")
+                            st.info("💡 请检查API密钥设置，现在将使用智能默认建议")
+                        else:
+                            st.warning(f"⚠️ AI服务暂时不可用")
+                            st.info("💡 将使用智能默认建议作为替代方案")
+                        
+                        fallback_suggestions = get_fallback_suggestions(video_props, user_input)
+                        st.session_state.ai_suggestions_cache[cache_key] = fallback_suggestions
+                        return fallback_suggestions
             
             ai_response = completion.choices[0].message.content
             
@@ -1259,6 +1258,15 @@ def main():
     # 添加一些说明
     if check_api_key():
         st.info("💡 欢迎使用视频转GIF工具！上传视频后AI将自动分析并生成智能建议，也可手动调整参数")
+        st.markdown("""
+        <div style="background: rgba(255,255,255,0.05); padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+            <small>
+            🚀 <strong>AI优化提示</strong>：
+            如遇到网络超时，系统会自动重试3次并提供智能默认建议。
+            建议在网络稳定时使用AI功能以获得最佳体验。
+            </small>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         st.info("💡 欢迎使用视频转GIF工具！上传视频后可手动调整参数，设置API密钥后可使用AI智能建议功能")
     
@@ -1331,10 +1339,22 @@ def main():
         )
         
         # 生成AI建议
-        if st.button("🎯 获取AI建议", use_container_width=True):
-            with st.spinner("AI正在分析并生成建议..."):
-                suggestions = generate_ai_suggestions(video_info, user_input)
-                st.session_state.ai_suggestions = suggestions
+        col_ai1, col_ai2 = st.columns([3, 1])
+        with col_ai1:
+            if st.button("🎯 获取AI建议", use_container_width=True):
+                with st.spinner("AI正在分析并生成建议..."):
+                    suggestions = generate_ai_suggestions(video_info, user_input)
+                    st.session_state.ai_suggestions = suggestions
+        
+        with col_ai2:
+            if st.button("🔄 重新分析", use_container_width=True, help="清除缓存并重新获取AI建议"):
+                # 清除AI建议缓存
+                if 'ai_suggestions_cache' in st.session_state:
+                    st.session_state.ai_suggestions_cache.clear()
+                if 'ai_suggestions' in st.session_state:
+                    del st.session_state.ai_suggestions
+                st.success("✅ 缓存已清除，请重新获取AI建议")
+                st.rerun()
         
         # 显示AI建议
         if st.session_state.ai_suggestions:
