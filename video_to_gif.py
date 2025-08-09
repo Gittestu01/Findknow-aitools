@@ -302,35 +302,120 @@ def reset_agent():
     # 强制重新运行页面，清除所有UI状态
     st.rerun()
 
-def analyze_video_properties(video_path):
-    """分析视频属性"""
+def validate_video_file(video_path):
+    """验证视频文件的完整性和可读性"""
     try:
+        # 检查文件是否存在
+        if not os.path.exists(video_path):
+            return False, "文件不存在"
+        
+        # 检查文件大小
+        file_size = os.path.getsize(video_path)
+        if file_size == 0:
+            return False, "文件为空"
+        
+        if file_size < 1024:  # 小于1KB，可能是损坏的文件
+            return False, "文件太小，可能已损坏"
+        
+        # 尝试打开视频文件进行基本验证
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return None
+            cap.release()
+            return False, "无法打开视频文件"
         
-        # 获取视频属性
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        duration = frame_count / fps if fps > 0 else 0
-        
-        # 获取文件大小
-        file_size = os.path.getsize(video_path)
-        
+        # 尝试读取第一帧以验证文件完整性
+        ret, frame = cap.read()
         cap.release()
         
-        return {
-            'fps': fps,
-            'frame_count': frame_count,
-            'width': width,
-            'height': height,
-            'duration': duration,
-            'file_size': file_size
-        }
+        if not ret or frame is None:
+            return False, "无法读取视频帧，文件可能已损坏"
+        
+        return True, "文件验证通过"
+        
     except Exception as e:
-        st.error(f"分析视频属性失败: {e}")
+        return False, f"文件验证失败: {str(e)}"
+
+def analyze_video_properties(video_path):
+    """分析视频属性 - 增强版本，具有更强的错误处理"""
+    try:
+        # 首先验证视频文件
+        is_valid, message = validate_video_file(video_path)
+        if not is_valid:
+            st.error(f"❌ 视频文件验证失败: {message}")
+            return None
+        
+        # 使用更安全的方式打开视频
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            st.error("❌ 无法打开视频文件，可能是格式不支持或文件已损坏")
+            return None
+        
+        try:
+            # 获取基础视频属性，添加默认值防护
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            # 验证获取的属性是否合理
+            if fps <= 0 or fps > 120:  # FPS不合理
+                fps = 25.0  # 使用默认FPS
+                st.warning("⚠️ 检测到异常帧率，使用默认值25FPS")
+            
+            if frame_count <= 0:  # 帧数不合理
+                frame_count = 1
+                st.warning("⚠️ 无法获取准确帧数，使用估算值")
+            
+            if width <= 0 or height <= 0 or width > 4000 or height > 4000:  # 分辨率不合理
+                st.error("❌ 检测到异常的视频分辨率，无法处理此视频")
+                cap.release()
+                return None
+            
+            # 计算时长
+            duration = frame_count / fps if fps > 0 else 1.0
+            
+            # 获取文件大小
+            file_size = os.path.getsize(video_path)
+            
+            # 尝试读取一帧以进一步验证文件完整性
+            test_frame_read = False
+            try:
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    test_frame_read = True
+                # 回到开始位置
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            except Exception as e:
+                st.warning(f"⚠️ 读取测试帧时出现问题: {str(e)}")
+            
+            cap.release()
+            
+            if not test_frame_read:
+                st.error("❌ 无法读取视频帧，文件可能已损坏或格式不兼容")
+                return None
+            
+            video_props = {
+                'fps': fps,
+                'frame_count': frame_count,
+                'width': width,
+                'height': height,
+                'duration': duration,
+                'file_size': file_size
+            }
+            
+            # 显示成功信息
+            st.success("✅ 视频分析完成")
+            
+            return video_props
+            
+        except Exception as e:
+            cap.release()
+            st.error(f"❌ 分析视频属性时出错: {str(e)}")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ 视频分析失败: {str(e)}")
+        st.info("💡 这可能是由于视频文件损坏、格式不支持或编码问题导致的")
         return None
 
 def generate_ai_suggestions(video_props, user_input=""):
@@ -803,95 +888,219 @@ def get_fallback_suggestions(video_props, user_input=""):
     return suggestions
 
 def get_real_gif_size_preview(video_path, params):
-    """通过真实转换获得准确的GIF文件大小预估 - 高性能优化版本"""
+    """通过真实转换获得准确的GIF文件大小预估 - 高性能优化版本，增强错误处理"""
+    cap = None
     try:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
+        # 首先验证视频文件
+        is_valid, message = validate_video_file(video_path)
+        if not is_valid:
+            st.warning(f"⚠️ 预估时视频验证失败: {message}")
             return None
         
-        # 预分配变量
-        fps = params['fps']
-        target_width = params['width']
-        target_height = params['height']
-        quality = params['quality']
+        # 安全地打开视频文件
+        try:
+            cap = cv2.VideoCapture(video_path)
+        except Exception as e:
+            st.warning(f"⚠️ 无法打开视频文件进行预估: {str(e)}")
+            return None
+            
+        if not cap.isOpened():
+            if cap:
+                cap.release()
+            return None
         
-        # 计算采样间隔
-        original_fps = cap.get(cv2.CAP_PROP_FPS)
+        # 预分配变量，增加安全检查
+        fps = max(1, min(30, params.get('fps', 10)))  # 限制FPS范围
+        target_width = max(10, min(2000, params.get('width', 640)))  # 限制宽度范围
+        target_height = max(10, min(2000, params.get('height', 480)))  # 限制高度范围
+        quality = max(50, min(100, params.get('quality', 85)))  # 限制质量范围
+        
+        # 安全地获取视频属性
+        try:
+            original_fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        except Exception as e:
+            cap.release()
+            st.warning(f"⚠️ 获取视频属性失败: {str(e)}")
+            return None
+        
+        # 验证获取的属性
+        if original_fps <= 0 or original_fps > 120:
+            original_fps = 25.0  # 使用默认值
+        
+        if total_frames <= 0:
+            total_frames = 100  # 使用默认值
+        
+        # 计算采样间隔，添加边界检查
         sample_interval = max(1, int(original_fps / fps)) if original_fps > 0 else 1
         
-        # 限制最大帧数以提高速度 - 预估时使用较少帧数但保持准确性
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        actual_output_frames = min(150, total_frames // sample_interval)  # 实际转换时的帧数
-        
-        # 为了确保预估完全准确，使用与实际转换相同的帧数
-        preview_frames = actual_output_frames
+        # 限制预估时的帧数以提高速度和稳定性
+        max_preview_frames = min(30, total_frames // sample_interval)  # 大幅减少预估帧数
+        if max_preview_frames <= 0:
+            max_preview_frames = 5  # 最少处理5帧
         
         # 预分配帧数组
         frames = []
         frame_count = 0
         processed_frames = 0
+        max_read_attempts = max_preview_frames * 3  # 防止无限循环
+        read_attempts = 0
         
         # 预设置resize插值方法
         resize_interpolation = cv2.INTER_LINEAR
         
-        while processed_frames < preview_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # 按间隔采样 - 与实际转换完全相同的逻辑
-            if frame_count % sample_interval == 0:
-                try:
-                    # 批量处理：调整尺寸和颜色转换
-                    if target_width and target_height:
-                        frame = cv2.resize(frame, (target_width, target_height), interpolation=resize_interpolation)
-                    
-                    # BGR转RGB - 直接转换
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # 转换为PIL图像 - 直接从numpy数组创建
-                    frames.append(Image.fromarray(frame_rgb))
-                    processed_frames += 1
+        # 安全的帧读取循环
+        while processed_frames < max_preview_frames and read_attempts < max_read_attempts:
+            try:
+                ret, frame = cap.read()
+                read_attempts += 1
+                
+                if not ret or frame is None:
+                    break
+                
+                # 按间隔采样
+                if frame_count % sample_interval == 0:
+                    try:
+                        # 验证帧的有效性
+                        if frame.shape[0] <= 0 or frame.shape[1] <= 0:
+                            frame_count += 1
+                            continue
                         
-                except Exception:
-                    continue
-            
-            frame_count += 1
+                        # 安全地调整尺寸
+                        if target_width and target_height:
+                            try:
+                                frame = cv2.resize(frame, (target_width, target_height), interpolation=resize_interpolation)
+                            except Exception as resize_e:
+                                # 如果resize失败，跳过这一帧
+                                frame_count += 1
+                                continue
+                        
+                        # 安全地进行颜色转换
+                        try:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        except Exception as color_e:
+                            # 如果颜色转换失败，跳过这一帧
+                            frame_count += 1
+                            continue
+                        
+                        # 转换为PIL图像
+                        try:
+                            pil_image = Image.fromarray(frame_rgb)
+                            frames.append(pil_image)
+                            processed_frames += 1
+                        except Exception as pil_e:
+                            # 如果PIL转换失败，跳过这一帧
+                            frame_count += 1
+                            continue
+                            
+                    except Exception as frame_e:
+                        # 处理单帧时的任何异常，继续处理下一帧
+                        pass
+                
+                frame_count += 1
+                
+            except Exception as read_e:
+                # 读取帧时的异常，尝试继续
+                read_attempts += 1
+                if read_attempts >= max_read_attempts:
+                    break
+                continue
         
-        cap.release()
+        # 安全释放资源
+        if cap:
+            cap.release()
         
-        if not frames:
+        # 检查是否成功处理了足够的帧
+        if not frames or len(frames) < 2:
+            st.warning("⚠️ 预估时无法读取足够的视频帧，使用估算大小")
             return None
         
-        # 创建GIF - 优化参数
-        gif_buffer = io.BytesIO()
-        gif_duration = int(1000 / fps)
+        # 安全地创建GIF
+        try:
+            gif_buffer = io.BytesIO()
+            gif_duration = max(50, int(1000 / fps))  # 确保duration不会太小
+            
+            # 使用更保守的参数以避免错误
+            frames[0].save(
+                gif_buffer,
+                format='GIF',
+                save_all=True,
+                append_images=frames[1:],
+                duration=gif_duration,
+                loop=0,
+                optimize=bool(params.get('optimize', True)),
+                quality=quality
+            )
+            
+            gif_buffer.seek(0)
+            gif_data = gif_buffer.getvalue()
+            
+            # 验证生成的GIF数据
+            if len(gif_data) > 0:
+                return len(gif_data)
+            else:
+                return None
+            
+        except Exception as gif_e:
+            st.warning(f"⚠️ 创建预估GIF时出错: {str(gif_e)}")
+            return None
         
-        frames[0].save(
-            gif_buffer,
-            format='GIF',
-            save_all=True,
-            append_images=frames[1:],
-            duration=gif_duration,
-            loop=0,
-            optimize=params['optimize'],
-            quality=quality
-        )
-        
-        gif_buffer.seek(0)
-        gif_data = gif_buffer.getvalue()
-        
-        # 由于使用了与实际转换相同的帧数和逻辑，直接返回GIF大小
-        return len(gif_data)
-        
-    except Exception:
+    except Exception as e:
+        # 捕获所有未预期的异常
+        if cap:
+            cap.release()
+        st.warning(f"⚠️ 预估过程中出现异常: {str(e)}")
         return None
 
+def get_fallback_estimate_size(video_props, params):
+    """获取备用的文件大小估算"""
+    try:
+        # 基于视频属性和参数进行数学估算
+        width = params.get('width', 640)
+        height = params.get('height', 480)
+        fps = params.get('fps', 10)
+        quality = params.get('quality', 85)
+        duration = video_props.get('duration', 10)
+        
+        # 基础估算公式（经验值）
+        # 考虑分辨率、帧率、质量和时长
+        pixels_per_frame = width * height
+        total_frames = fps * duration
+        
+        # 每像素每帧的估算字节数（根据质量调整）
+        bytes_per_pixel_frame = (quality / 100) * 0.8  # 基础值
+        
+        # 计算基础大小
+        base_size = pixels_per_frame * total_frames * bytes_per_pixel_frame
+        
+        # 应用压缩因子（GIF压缩效率）
+        compression_factor = 0.3  # GIF的平均压缩率
+        estimated_size = base_size * compression_factor
+        
+        # 添加一些变化范围，确保估算在合理范围内
+        min_size = 10 * 1024  # 最小10KB
+        max_size = 50 * 1024 * 1024  # 最大50MB
+        
+        estimated_size = max(min_size, min(max_size, estimated_size))
+        
+        return int(estimated_size)
+        
+    except Exception as e:
+        # 如果备用估算也失败，返回保守估计
+        return video_props.get('file_size', 5 * 1024 * 1024) // 4
+
 def estimate_gif_size(video_props, params, video_path=None):
-    """预估GIF文件大小 - 使用真实转换获得准确预估"""
+    """预估GIF文件大小 - 使用真实转换获得准确预估，带备用机制"""
+    
+    # 验证输入参数
+    if not video_props or not params:
+        return 1024 * 1024  # 返回1MB作为默认值
     
     # 生成参数缓存键
-    params_key = f"{params.get('width', 0)}x{params.get('height', 0)}_{params.get('fps', 10)}fps_{params.get('quality', 85)}q"
+    try:
+        params_key = f"{params.get('width', 0)}x{params.get('height', 0)}_{params.get('fps', 10)}fps_{params.get('quality', 85)}q"
+    except Exception:
+        params_key = "default_params"
     
     # 初始化预估缓存
     if 'size_estimate_cache' not in st.session_state:
@@ -899,19 +1108,43 @@ def estimate_gif_size(video_props, params, video_path=None):
     
     # 检查缓存
     if params_key in st.session_state.size_estimate_cache:
-        return st.session_state.size_estimate_cache[params_key]
+        cached_size = st.session_state.size_estimate_cache[params_key]
+        if cached_size and cached_size > 0:
+            return cached_size
     
-    # 始终使用真实转换进行预估
     estimated_size = None
-    if video_path and os.path.exists(video_path):
-        estimated_size = get_real_gif_size_preview(video_path, params)
     
-    # 如果真实转换失败，返回保守估计
-    if estimated_size is None:
-        estimated_size = video_props.get('file_size', 10 * 1024 * 1024) // 4  # 使用原文件大小的1/4作为备用估计
+    # 首先尝试真实转换预估（只有在视频文件有效时）
+    if video_path and os.path.exists(video_path):
+        try:
+            # 验证视频文件状态
+            is_valid, _ = validate_video_file(video_path)
+            if is_valid:
+                estimated_size = get_real_gif_size_preview(video_path, params)
+        except Exception as e:
+            st.warning(f"⚠️ 真实预估过程中出现异常: {str(e)}")
+            estimated_size = None
+    
+    # 如果真实转换失败，使用备用估算
+    if estimated_size is None or estimated_size <= 0:
+        try:
+            estimated_size = get_fallback_estimate_size(video_props, params)
+            st.info("📊 使用数学模型估算文件大小（实际大小可能有差异）")
+        except Exception as e:
+            # 如果备用估算也失败，使用最保守的估计
+            file_size = video_props.get('file_size', 10 * 1024 * 1024)
+            estimated_size = max(1024, file_size // 4)  # 最少1KB
+            st.warning("⚠️ 无法精确预估文件大小，使用保守估计")
+    
+    # 验证估算结果的合理性
+    if estimated_size is None or estimated_size <= 0:
+        estimated_size = 1024 * 1024  # 默认1MB
     
     # 缓存结果
-    st.session_state.size_estimate_cache[params_key] = estimated_size
+    try:
+        st.session_state.size_estimate_cache[params_key] = estimated_size
+    except Exception:
+        pass  # 缓存失败不影响功能
     
     return estimated_size
 
@@ -1024,102 +1257,187 @@ def parse_size_constraint(operator, value, unit):
     }
 
 def convert_video_to_gif(video_path, params, size_constraint=None):
-    """将视频转换为GIF - 高性能优化版本"""
+    """将视频转换为GIF - 高性能优化版本，增强错误处理"""
+    cap = None
     try:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            st.error("无法打开视频文件")
+        # 首先验证视频文件
+        is_valid, message = validate_video_file(video_path)
+        if not is_valid:
+            st.error(f"❌ 视频文件验证失败: {message}")
             return None
         
-        # 预先分配变量
-        fps = params['fps']
-        target_width = params['width']
-        target_height = params['height']
-        quality = params['quality']
+        # 安全地打开视频文件
+        try:
+            cap = cv2.VideoCapture(video_path)
+        except Exception as e:
+            st.error(f"❌ 无法打开视频文件: {str(e)}")
+            return None
+            
+        if not cap.isOpened():
+            st.error("❌ 无法打开视频文件，可能是格式不支持或文件已损坏")
+            return None
+        
+        # 预先分配变量，增加安全检查
+        fps = max(1, min(30, params.get('fps', 10)))
+        target_width = max(10, min(2000, params.get('width', 640)))
+        target_height = max(10, min(2000, params.get('height', 480)))
+        quality = max(50, min(100, params.get('quality', 85)))
+        
+        # 安全地获取视频属性
+        try:
+            original_fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        except Exception as e:
+            cap.release()
+            st.error(f"❌ 获取视频属性失败: {str(e)}")
+            return None
+        
+        # 验证获取的属性
+        if original_fps <= 0 or original_fps > 120:
+            original_fps = 25.0
+            st.warning("⚠️ 检测到异常帧率，使用默认值25FPS")
+        
+        if total_frames <= 0:
+            total_frames = 100
+            st.warning("⚠️ 无法获取准确帧数，使用估算值")
         
         # 计算采样间隔
-        original_fps = cap.get(cv2.CAP_PROP_FPS)
         sample_interval = max(1, int(original_fps / fps)) if original_fps > 0 else 1
         
-        # 限制最大帧数以提高速度
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # 限制最大帧数以提高速度和稳定性
         max_frames = min(150, total_frames // sample_interval)
+        if max_frames <= 0:
+            max_frames = 10  # 最少处理10帧
         
-        # 预分配帧数组以减少内存重分配
+        # 预分配帧数组
         frames = []
-        # Python列表无需预分配，自动扩容
-        
         frame_count = 0
         processed_frames = 0
+        max_read_attempts = max_frames * 2  # 防止无限循环
+        read_attempts = 0
         
-        # 创建进度条 - 减少更新频率
+        # 创建进度条
         progress_bar = st.progress(0)
         status_text = st.empty()
-        update_interval = max(1, max_frames // 20)  # 最多更新20次
+        update_interval = max(1, max_frames // 20)
         
         # 预设置resize插值方法
         resize_interpolation = cv2.INTER_LINEAR
         
-        while processed_frames < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # 按间隔采样
-            if frame_count % sample_interval == 0:
-                try:
-                    # 批量处理：调整尺寸和颜色转换一次完成
-                    if target_width and target_height:
-                        frame = cv2.resize(frame, (target_width, target_height), interpolation=resize_interpolation)
-                    
-                    # BGR转RGB - 直接转换避免中间变量
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # 转换为PIL图像 - 直接从numpy数组创建
-                    frames.append(Image.fromarray(frame_rgb))
-                    processed_frames += 1
-                    
-                    # 优化的进度更新 - 大幅减少更新频率
-                    if processed_frames % update_interval == 0 or processed_frames == max_frames:
-                        progress = processed_frames / max_frames
-                        progress_bar.progress(progress)
-                        status_text.text(f"正在处理视频帧... {processed_frames}/{max_frames}")
-                    
-                    # 优化内存清理频率
-                    if processed_frames % 50 == 0:
-                        gc.collect()
+        # 安全的帧处理循环
+        while processed_frames < max_frames and read_attempts < max_read_attempts:
+            try:
+                ret, frame = cap.read()
+                read_attempts += 1
+                
+                if not ret or frame is None:
+                    break
+                
+                # 按间隔采样
+                if frame_count % sample_interval == 0:
+                    try:
+                        # 验证帧的有效性
+                        if frame.shape[0] <= 0 or frame.shape[1] <= 0:
+                            frame_count += 1
+                            continue
                         
-                except Exception:
-                    continue
-            
-            frame_count += 1
+                        # 安全地调整尺寸
+                        if target_width and target_height:
+                            try:
+                                frame = cv2.resize(frame, (target_width, target_height), interpolation=resize_interpolation)
+                            except Exception as resize_e:
+                                frame_count += 1
+                                continue
+                        
+                        # 安全地进行颜色转换
+                        try:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        except Exception as color_e:
+                            frame_count += 1
+                            continue
+                        
+                        # 转换为PIL图像
+                        try:
+                            pil_image = Image.fromarray(frame_rgb)
+                            frames.append(pil_image)
+                            processed_frames += 1
+                        except Exception as pil_e:
+                            frame_count += 1
+                            continue
+                        
+                        # 更新进度
+                        if processed_frames % update_interval == 0 or processed_frames == max_frames:
+                            try:
+                                progress = processed_frames / max_frames
+                                progress_bar.progress(progress)
+                                status_text.text(f"正在处理视频帧... {processed_frames}/{max_frames}")
+                            except Exception:
+                                pass  # 进度更新失败不影响转换
+                        
+                        # 内存管理
+                        if processed_frames % 50 == 0:
+                            gc.collect()
+                            
+                    except Exception as frame_e:
+                        # 处理单帧的异常，继续下一帧
+                        pass
+                
+                frame_count += 1
+                
+            except Exception as read_e:
+                # 读取帧的异常，尝试继续
+                read_attempts += 1
+                if read_attempts >= max_read_attempts:
+                    break
+                continue
         
-        cap.release()
+        # 安全释放资源
+        if cap:
+            cap.release()
         
-        if not frames:
-            st.error("没有提取到有效帧")
+        # 检查是否成功处理了足够的帧
+        if not frames or len(frames) < 2:
+            st.error("❌ 没有提取到足够的有效帧，无法生成GIF")
+            st.info("💡 这可能是由于视频文件损坏或格式不兼容导致的")
             return None
         
-        # 创建GIF - 优化参数
-        status_text.text("正在生成GIF文件...")
-        gif_buffer = io.BytesIO()
-        
-        # 预设置GIF参数避免重复计算
-        gif_duration = int(1000 / fps)
-        
-        frames[0].save(
-            gif_buffer,
-            format='GIF',
-            save_all=True,
-            append_images=frames[1:],
-            duration=gif_duration,
-            loop=0,
-            optimize=params['optimize'],
-            quality=quality
-        )
-        
-        gif_buffer.seek(0)
-        gif_data = gif_buffer.getvalue()
+        # 安全地创建GIF
+        try:
+            status_text.text("正在生成GIF文件...")
+            gif_buffer = io.BytesIO()
+            
+            # 预设置GIF参数，添加安全检查
+            gif_duration = max(50, int(1000 / fps))  # 确保duration不会太小
+            
+            # 验证frames是否有效
+            if not frames or len(frames) == 0:
+                st.error("❌ 没有有效的帧数据")
+                return None
+            
+            # 安全地保存GIF
+            frames[0].save(
+                gif_buffer,
+                format='GIF',
+                save_all=True,
+                append_images=frames[1:] if len(frames) > 1 else [],
+                duration=gif_duration,
+                loop=0,
+                optimize=bool(params.get('optimize', True)),
+                quality=quality
+            )
+            
+            gif_buffer.seek(0)
+            gif_data = gif_buffer.getvalue()
+            
+            # 验证生成的GIF数据
+            if not gif_data or len(gif_data) == 0:
+                st.error("❌ 生成的GIF文件为空")
+                return None
+                
+        except Exception as gif_e:
+            st.error(f"❌ 生成GIF文件时出错: {str(gif_e)}")
+            st.info("💡 请尝试调整参数（降低质量或分辨率）后重试")
+            return None
         
         # 检查文件大小约束
         if size_constraint and size_constraint['enabled']:
@@ -1196,7 +1514,21 @@ def convert_video_to_gif(video_path, params, size_constraint=None):
         return gif_data
         
     except Exception as e:
-        st.error(f"转换失败: {e}")
+        # 确保cap被正确释放
+        if cap:
+            cap.release()
+        
+        # 安全地处理异常信息
+        error_msg = safe_encode_string(str(e))
+        if not error_msg:
+            error_msg = "未知错误"
+            
+        st.error(f"❌ 视频转换失败: {error_msg}")
+        st.info("💡 这可能是由于以下原因导致的：")
+        st.info("   • 视频文件损坏或格式不兼容")
+        st.info("   • 参数设置不当（分辨率过大、质量过高等）")
+        st.info("   • 系统内存不足")
+        st.info("   • 请尝试上传不同的视频文件或调整参数")
         return None
 
 def optimize_gif_size(gif_data, target_size_bytes):
@@ -1480,9 +1812,13 @@ def setup_api_key():
             """, unsafe_allow_html=True)
 
 def main():
-    """主函数"""
-    # 初始化会话状态
-    init_session_state()
+    """主函数 - 增强的错误处理和容错机制"""
+    try:
+        # 初始化会话状态
+        init_session_state()
+    except Exception as e:
+        st.error(f"❌ 初始化会话状态失败: {str(e)}")
+        st.stop()
     
     # 页面头部
     st.markdown("""
@@ -1535,8 +1871,13 @@ def main():
         st.success(f"✅ 文件上传成功: {uploaded_file.name}")
         st.info("💡 系统将自动分析视频并设置最优参数")
         
-        # 获取视频信息
-        video_info = analyze_video_properties(input_path)
+        # 获取视频信息，增强错误处理
+        try:
+            video_info = analyze_video_properties(input_path)
+        except Exception as e:
+            st.error(f"❌ 分析视频文件时出现异常: {str(e)}")
+            st.info("💡 请尝试上传不同的视频文件")
+            video_info = None
         
         # 显示文件信息
         if video_info:
