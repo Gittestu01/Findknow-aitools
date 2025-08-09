@@ -614,13 +614,8 @@ def get_real_gif_size_preview(video_path, params):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         actual_output_frames = min(150, total_frames // sample_interval)  # 实际转换时的帧数
         
-        # 预估时使用较少帧数，但根据视频长度动态调整
-        if actual_output_frames <= 50:
-            preview_frames = actual_output_frames  # 短视频直接用全部帧
-        elif actual_output_frames <= 100:
-            preview_frames = 25  # 中等长度视频使用25帧
-        else:
-            preview_frames = 20  # 长视频使用20帧
+        # 为了确保预估完全准确，使用与实际转换相同的帧数
+        preview_frames = actual_output_frames
         
         # 预分配帧数组
         frames = []
@@ -630,23 +625,13 @@ def get_real_gif_size_preview(video_path, params):
         # 预设置resize插值方法
         resize_interpolation = cv2.INTER_LINEAR
         
-        # 计算均匀采样间隔 - 确保采样帧均匀分布在整个视频中
-        if preview_frames < actual_output_frames:
-            # 计算预估时的额外跳跃间隔，确保采样帧分布在整个视频范围内
-            preview_sample_step = max(1, actual_output_frames // preview_frames)
-        else:
-            preview_sample_step = 1
-        
-        preview_sample_count = 0
-        
         while processed_frames < preview_frames:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            # 按间隔采样，并且均匀分布采样
-            if (frame_count % sample_interval == 0 and 
-                preview_sample_count % preview_sample_step == 0):
+            # 按间隔采样 - 与实际转换完全相同的逻辑
+            if frame_count % sample_interval == 0:
                 try:
                     # 批量处理：调整尺寸和颜色转换
                     if target_width and target_height:
@@ -661,10 +646,6 @@ def get_real_gif_size_preview(video_path, params):
                         
                 except Exception:
                     continue
-                
-                preview_sample_count += 1
-            elif frame_count % sample_interval == 0:
-                preview_sample_count += 1
             
             frame_count += 1
         
@@ -691,17 +672,8 @@ def get_real_gif_size_preview(video_path, params):
         gif_buffer.seek(0)
         gif_data = gif_buffer.getvalue()
         
-        # 基于采样帧数调整预估大小
-        preview_frames_count = len(frames)  # 实际处理的预览帧数
-        
-        if preview_frames_count > 0:
-            # 计算更准确的大小比例：实际输出帧数 / 预览帧数
-            size_multiplier = actual_output_frames / preview_frames_count
-            estimated_size = len(gif_data) * size_multiplier
-        else:
-            estimated_size = len(gif_data)
-        
-        return int(estimated_size)
+        # 由于使用了与实际转换相同的帧数和逻辑，直接返回GIF大小
+        return len(gif_data)
         
     except Exception:
         return None
@@ -1624,21 +1596,21 @@ def main():
             estimated_kb = estimated_size / 1024
             
             if estimated_mb >= 1:
-                size_display = f"{estimated_mb:.1f}MB"
+                size_display = f"{estimated_mb:.2f}MB"
             else:
-                size_display = f"{estimated_kb:.0f}KB"
+                size_display = f"{estimated_kb:.1f}KB"
             
-            st.info(f"📊 当前文件转后的预估大小为: {size_display}")
-            
-            # 始终显示调整提示
-            st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
-            
-            # 如果有约束，显示约束验证结果
+            # 如果有约束，在一个信息中显示预估大小和约束状态
             if constraint and constraint.get('enabled', False):
                 if satisfied:
-                    st.success(f"✅ 当前参数满足大小约束要求（{constraint['operator']} {target_display}）")
+                    st.success(f"✅ 基于当前参数文件转换后的预估大小为: {size_display} (满足约束 {constraint['operator']} {target_display})")
                 else:
-                    st.info(f"📊 当前参数预估大小约为 {size_display}，约束要求 {constraint['operator']} {target_display}")
+                    st.warning(f"⚠️ 基于当前参数文件转换后的预估大小为: {size_display} (不满足约束 {constraint['operator']} {target_display})")
+            else:
+                st.info(f"📊 基于当前参数文件转换后的预估大小为: {size_display}")
+            
+            # 显示调整提示
+            st.info("💡 提示：降低质量、帧率或分辨率可以减小文件大小")
         
         # 转换按钮
         st.markdown("---")
