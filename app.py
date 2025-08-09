@@ -332,7 +332,7 @@ def main_page():
                     <p class="tool-description">{tool['description']}</p>
                 </div>
                 <div class="tool-card-button">
-                    <a href="pages/video_to_gif" class="tool-button">
+                    <a href="https://findknow-aitools-4togif.streamlit.app/" target="_blank" class="tool-button">
                         进入视频转GIF
                     </a>
                 </div>
