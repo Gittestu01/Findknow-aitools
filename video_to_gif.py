@@ -54,8 +54,7 @@ def setup_page_config():
         # 如果页面配置失败，继续运行
         pass
 
-# 设置页面配置
-setup_page_config()
+# 页面配置将在main函数中设置（仅在独立运行时）
 
 # AI配置
 AI_CONFIG = {
@@ -1871,6 +1870,7 @@ def setup_api_key():
 
 def main():
     """主函数 - 增强的错误处理和容错机制"""
+    
     try:
         # 检查系统环境
         if not check_system_requirements():
@@ -2524,4 +2524,6 @@ def run_main_app():
                 reset_agent()
 
 if __name__ == "__main__":
+    # 仅在独立运行时设置页面配置
+    setup_page_config()
     main()
