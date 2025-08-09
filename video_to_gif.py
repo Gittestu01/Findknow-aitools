@@ -21,19 +21,23 @@ st.set_page_config(
 def setup_python_path():
     """设置Python导入路径"""
     try:
+        # 当前文件在 pages 目录中
         current_dir = Path(__file__).parent.absolute()
-        pages_dir = current_dir / "pages"
         
-        # 确保路径存在
-        if not pages_dir.exists():
-            st.error(f"❌ pages目录不存在: {pages_dir}")
-            return False
-            
+        # 父目录是项目根目录
+        project_root = current_dir.parent.absolute()
+        
         # 添加到Python路径
-        paths_to_add = [str(current_dir), str(pages_dir)]
+        paths_to_add = [str(project_root), str(current_dir)]
         for path in paths_to_add:
             if path not in sys.path:
                 sys.path.insert(0, path)
+        
+        # 验证实现文件是否存在
+        video_to_gif_1_path = current_dir / "video_to_gif_1.py"
+        if not video_to_gif_1_path.exists():
+            st.error(f"❌ 实现文件不存在: {video_to_gif_1_path}")
+            return False
         
         return True
     except Exception as e:
@@ -56,43 +60,30 @@ def check_dependencies():
 def load_video_to_gif_module():
     """加载视频转GIF模块"""
     try:
-        # 方法1: 尝试直接导入
+        # 方法1: 尝试导入实际的实现文件
         try:
-            from pages.video_to_gif import main as video_to_gif_main
-            st.success("✅ 成功使用直接导入方式")
-            return video_to_gif_main
-        except ImportError:
-            pass
-        
-        # 方法2: 使用importlib动态导入
-        import importlib.util
-        current_dir = Path(__file__).parent.absolute()
-        module_path = current_dir / "pages" / "video_to_gif.py"
-        
-        if not module_path.exists():
-            st.error(f"❌ 模块文件不存在: {module_path}")
-            return None
-        
-        spec = importlib.util.spec_from_file_location("video_to_gif_module", module_path)
-        if spec is None:
-            st.error("❌ 无法创建模块规范")
+            # 首先尝试从当前目录导入 video_to_gif_1
+            import importlib.util
+            current_dir = Path(__file__).parent.absolute()
+            module_path = current_dir / "video_to_gif_1.py"
+            
+            if module_path.exists():
+                spec = importlib.util.spec_from_file_location("video_to_gif_1", module_path)
+                video_to_gif_1 = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(video_to_gif_1)
+                
+                if hasattr(video_to_gif_1, 'main'):
+                    st.success("✅ 成功导入 video_to_gif_1.py")
+                    return video_to_gif_1.main
+            
+            st.error("❌ 无法找到 video_to_gif_1.py 实现文件")
             return None
             
-        video_to_gif_module = importlib.util.module_from_spec(spec)
-        if video_to_gif_module is None:
-            st.error("❌ 无法创建模块对象")
-            return None
+        except ImportError as e:
+            st.error(f"❌ 导入失败: {e}")
+            pass
         
-        # 执行模块
-        spec.loader.exec_module(video_to_gif_module)
-        
-        # 获取main函数
-        if hasattr(video_to_gif_module, 'main'):
-            st.success("✅ 成功使用动态导入方式")
-            return video_to_gif_module.main
-        else:
-            st.error("❌ 模块中没有main函数")
-            return None
+
             
     except Exception as e:
         st.error(f"❌ 加载模块失败: {e}")
@@ -133,19 +124,17 @@ def main():
             
             # 检查文件存在性
             current_dir = Path(__file__).parent.absolute()
-            pages_dir = current_dir / "pages"
-            video_gif_file = pages_dir / "video_to_gif.py"
+            video_gif_1_file = current_dir / "video_to_gif_1.py"
             
             st.write("**文件检查:**")
-            st.write(f"- pages目录存在: {pages_dir.exists()}")
-            st.write(f"- video_to_gif.py存在: {video_gif_file.exists()}")
+            st.write(f"- 当前目录 (pages): {current_dir}")
+            st.write(f"- video_to_gif_1.py存在: {video_gif_1_file.exists()}")
             
-            if pages_dir.exists():
-                try:
-                    files_in_pages = list(pages_dir.glob("*.py"))
-                    st.write(f"- pages目录中的Python文件: {[f.name for f in files_in_pages]}")
-                except Exception as e:
-                    st.write(f"- 无法列出pages目录文件: {e}")
+            try:
+                files_in_current = list(current_dir.glob("*.py"))
+                st.write(f"- 当前目录中的Python文件: {[f.name for f in files_in_current]}")
+            except Exception as e:
+                st.write(f"- 无法列出当前目录文件: {e}")
 
 if __name__ == "__main__":
     main()
